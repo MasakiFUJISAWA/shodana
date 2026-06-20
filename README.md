@@ -1,6 +1,6 @@
 # My Finder
 
-A macOS file manager prototype that keeps the broad feel of Finder while bringing in Explorer-style file management:
+Better Finder: a macOS file manager prototype that keeps the broad feel of Finder while bringing in Explorer-style file management.
 
 - Direct path entry in an address bar
 - Clickable breadcrumbs for folder hierarchy
