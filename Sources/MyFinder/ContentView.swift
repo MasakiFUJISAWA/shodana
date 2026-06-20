@@ -112,7 +112,9 @@ struct ContentView: View {
     private func shouldHandleFilePasteboardShortcut(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
-        guard flags == .command,
+        guard flags.contains(.command),
+              !flags.contains(.option),
+              !flags.contains(.control),
               ["x", "c", "v"].contains(event.charactersIgnoringModifiers?.lowercased() ?? "") else {
             return false
         }
@@ -549,6 +551,10 @@ struct FileListView: View {
                     FileIconGridView()
                 }
             }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            browser.activateFilePane()
         }
         .contextMenu {
             FolderContextMenu()

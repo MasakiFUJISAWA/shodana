@@ -301,6 +301,7 @@ final class FileBrowserViewModel: ObservableObject {
 
     func select(_ url: URL) {
         let modifierFlags = NSApp.currentEvent?.modifierFlags ?? []
+        activateFilePane()
 
         if modifierFlags.contains(.command) {
             if selectedIDs.contains(url) {
@@ -319,6 +320,10 @@ final class FileBrowserViewModel: ObservableObject {
             selectedIDs = [url]
             selectionAnchorURL = url
         }
+    }
+
+    func activateFilePane() {
+        NSApp.keyWindow?.makeFirstResponder(nil)
     }
 
     private func selectRange(endingAt url: URL) {
