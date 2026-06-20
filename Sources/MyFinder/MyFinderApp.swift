@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -20,6 +21,37 @@ struct BrowserCommands: Commands {
     @ObservedObject var browser: FileBrowserViewModel
 
     var body: some Commands {
+        CommandGroup(replacing: .pasteboard) {
+            Button("Cut") {
+                if browser.isEditingText {
+                    NSApp.sendAction(#selector(NSText.cut(_:)), to: nil, from: nil)
+                } else {
+                    browser.cutSelection()
+                }
+            }
+            .keyboardShortcut("x", modifiers: [.command])
+            .disabled(!browser.isEditingText && browser.selectedIDs.isEmpty)
+
+            Button("Copy") {
+                if browser.isEditingText {
+                    NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)
+                } else {
+                    browser.copySelection()
+                }
+            }
+            .keyboardShortcut("c", modifiers: [.command])
+            .disabled(!browser.isEditingText && browser.selectedIDs.isEmpty)
+
+            Button("Paste") {
+                if browser.isEditingText {
+                    NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil)
+                } else {
+                    browser.pasteIntoCurrentFolder()
+                }
+            }
+            .keyboardShortcut("v", modifiers: [.command])
+        }
+
         CommandGroup(after: .newItem) {
             Button("New Folder") {
                 browser.createFolder()
@@ -39,25 +71,6 @@ struct BrowserCommands: Commands {
             }
             .keyboardShortcut(.return, modifiers: [.command])
             .disabled(browser.selectedIDs.count != 1)
-
-            Divider()
-
-            Button("Copy") {
-                browser.copySelection()
-            }
-            .keyboardShortcut("c", modifiers: [.command])
-            .disabled(browser.selectedIDs.isEmpty)
-
-            Button("Cut") {
-                browser.cutSelection()
-            }
-            .keyboardShortcut("x", modifiers: [.command])
-            .disabled(browser.selectedIDs.isEmpty)
-
-            Button("Paste") {
-                browser.pasteIntoCurrentFolder()
-            }
-            .keyboardShortcut("v", modifiers: [.command])
 
             Divider()
 

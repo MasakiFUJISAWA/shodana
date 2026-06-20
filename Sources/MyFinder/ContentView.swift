@@ -119,15 +119,7 @@ struct ContentView: View {
             return false
         }
 
-        return !isEditingText
-    }
-
-    private var isEditingText: Bool {
-        guard let firstResponder = NSApp.keyWindow?.firstResponder else {
-            return false
-        }
-
-        return firstResponder is NSTextView || firstResponder is NSTextField
+        return !browser.isEditingText
     }
 }
 
@@ -194,38 +186,22 @@ struct SidebarView: View {
     @State private var isFavoritesDropTargeted = false
 
     var body: some View {
-        List {
-            ForEach(browser.sidebarSections) { section in
-                SidebarLocationsSection(
-                    section: section,
-                    acceptsFavoriteDrops: section.title == "Favorites",
-                    isDropTargeted: section.title == "Favorites" ? $isFavoritesDropTargeted : .constant(false)
-                )
-            }
-
-            Section("Network") {
-                Button {
-                    browser.promptConnectToServer()
-                } label: {
-                    Label("Connect Server...", systemImage: "network")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(browser.sidebarSections) { section in
+                    SidebarLocationsSection(
+                        section: section,
+                        acceptsFavoriteDrops: section.title == "Favorites",
+                        isDropTargeted: section.title == "Favorites" ? $isFavoritesDropTargeted : .constant(false)
+                    )
                 }
-                .buttonStyle(.plain)
-                .padding(.vertical, 3)
 
-                Button {
-                    browser.refreshSidebarLocations()
-                } label: {
-                    Label("Reload Locations", systemImage: "arrow.clockwise")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .padding(.vertical, 3)
-                .help("Rescan cloud folders, mounted drives, and network volumes")
+                SidebarNetworkSection()
             }
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
+        .background(Color(nsColor: .controlBackgroundColor))
     }
 }
 
@@ -237,7 +213,22 @@ struct SidebarLocationsSection: View {
     @Binding var isDropTargeted: Bool
 
     var body: some View {
-        Section {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(section.title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(isDropTargeted ? Color.accentColor : .secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .padding(.bottom, 3)
+                .contentShape(Rectangle())
+                .modifier(
+                    FavoriteDropTargetModifier(
+                        isEnabled: acceptsFavoriteDrops,
+                        isTargeted: $isDropTargeted
+                    )
+                )
+
             ForEach(section.locations) { location in
                 SidebarLocationRow(location: location)
                     .modifier(
@@ -247,18 +238,8 @@ struct SidebarLocationsSection: View {
                         )
                     )
             }
-        } header: {
-            Text(section.title)
-                .foregroundStyle(isDropTargeted ? Color.accentColor : .secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .modifier(
-                    FavoriteDropTargetModifier(
-                        isEnabled: acceptsFavoriteDrops,
-                        isTargeted: $isDropTargeted
-                    )
-                )
         }
+        .padding(.bottom, 4)
         .modifier(
             FavoriteDropTargetModifier(
                 isEnabled: acceptsFavoriteDrops,
@@ -289,6 +270,46 @@ struct FavoriteDropTargetModifier: ViewModifier {
     }
 }
 
+struct SidebarNetworkSection: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text("Network")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .padding(.bottom, 3)
+
+            Button {
+                browser.promptConnectToServer()
+            } label: {
+                Label("Connect Server...", systemImage: "network")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+
+            Button {
+                browser.refreshSidebarLocations()
+            } label: {
+                Label("Reload Locations", systemImage: "arrow.clockwise")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .help("Rescan cloud folders, mounted drives, and network volumes")
+        }
+        .padding(.bottom, 4)
+    }
+}
+
 struct SidebarLocationRow: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
 
@@ -303,7 +324,8 @@ struct SidebarLocationRow: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.vertical, 3)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
         .contextMenu {
             LocationContextMenu(location: location)
         }
@@ -482,31 +504,7 @@ struct FileListView: View {
             } else {
                 switch browser.viewMode {
                 case .list:
-                    List(selection: $browser.selectedIDs) {
-                        ForEach(browser.items) { item in
-                            FileRow(item: item)
-                                .tag(item.url)
-                                .listRowBackground(
-                                    browser.selectedIDs.contains(item.url)
-                                        ? Color.accentColor.opacity(0.18)
-                                        : Color.clear
-                                )
-                                .contextMenu {
-                                    FileContextMenu(item: item)
-                                }
-                                .simultaneousGesture(TapGesture(count: 1).onEnded {
-                                    browser.select(item)
-                                })
-                                .simultaneousGesture(TapGesture(count: 2).onEnded {
-                                    browser.select(item)
-                                    browser.open(item)
-                                })
-                                .onDrag {
-                                    browser.dragProvider(for: item)
-                                }
-                        }
-                    }
-                    .listStyle(.plain)
+                    FileListRowsView()
                 case .icons:
                     FileIconGridView()
                 }
@@ -515,6 +513,53 @@ struct FileListView: View {
         .contextMenu {
             FolderContextMenu()
         }
+    }
+}
+
+struct FileListRowsView: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(browser.items) { item in
+                    FileListRowContainer(item: item)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+    }
+}
+
+struct FileListRowContainer: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    let item: FileItem
+
+    private var isSelected: Bool {
+        browser.selectedIDs.contains(item.url)
+    }
+
+    var body: some View {
+        FileRow(item: item)
+            .padding(.horizontal, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+            .contentShape(Rectangle())
+            .contextMenu {
+                FileContextMenu(item: item)
+            }
+            .simultaneousGesture(TapGesture(count: 1).onEnded {
+                browser.select(item)
+            })
+            .simultaneousGesture(TapGesture(count: 2).onEnded {
+                browser.select(item)
+                browser.open(item)
+            })
+            .onDrag {
+                browser.dragProvider(for: item)
+            }
     }
 }
 
@@ -707,12 +752,12 @@ struct FileContextMenu: View {
         Divider()
 
         Button("Copy") {
-            browser.selectedIDs = [item.url]
+            browser.selectOnly(item.url)
             browser.copySelection()
         }
 
         Button("Cut") {
-            browser.selectedIDs = [item.url]
+            browser.selectOnly(item.url)
             browser.cutSelection()
         }
 
@@ -743,7 +788,7 @@ struct FileContextMenu: View {
         Divider()
 
         Button("Move to Trash") {
-            browser.selectedIDs = [item.url]
+            browser.selectOnly(item.url)
             browser.trashSelection()
         }
     }

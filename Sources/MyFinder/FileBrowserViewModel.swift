@@ -26,6 +26,7 @@ final class FileBrowserViewModel: ObservableObject {
     private let userFavoritesDefaultsKey = "MyFinder.userFavoriteFolders"
     private var history: [URL]
     private var historyIndex = 0
+    private var selectionAnchorURL: URL?
 
     private enum TerminalApp {
         case terminal
@@ -68,6 +69,18 @@ final class FileBrowserViewModel: ObservableObject {
 
     var isITermAvailable: Bool {
         iTermApplicationURL != nil
+    }
+
+    var isEditingText: Bool {
+        guard let firstResponder = NSApp.keyWindow?.firstResponder else {
+            return false
+        }
+
+        if let textView = firstResponder as? NSTextView {
+            return textView.isEditable
+        }
+
+        return firstResponder is NSTextField
     }
 
     var breadcrumbs: [Breadcrumb] {
@@ -114,9 +127,14 @@ final class FileBrowserViewModel: ObservableObject {
             selectedIDs = selectedIDs.filter { selectedURL in
                 items.contains { $0.url == selectedURL }
             }
+
+            if let selectionAnchorURL, !items.contains(where: { $0.url == selectionAnchorURL }) {
+                self.selectionAnchorURL = firstSelectedURLInDisplayOrder()
+            }
         } catch {
             items = []
             selectedIDs.removeAll()
+            selectionAnchorURL = nil
             presentError(error, action: "Read folder")
         }
     }
@@ -160,6 +178,7 @@ final class FileBrowserViewModel: ObservableObject {
         currentURL = targetURL
         addressText = targetURL.path
         selectedIDs.removeAll()
+        selectionAnchorURL = nil
 
         if recordHistory {
             if historyIndex < history.count - 1 {
@@ -221,20 +240,54 @@ final class FileBrowserViewModel: ObservableObject {
         select(item.url)
     }
 
+    func selectOnly(_ url: URL) {
+        selectedIDs = [url]
+        selectionAnchorURL = url
+    }
+
     func select(_ url: URL) {
         let modifierFlags = NSApp.currentEvent?.modifierFlags ?? []
 
         if modifierFlags.contains(.command) {
             if selectedIDs.contains(url) {
                 selectedIDs.remove(url)
+
+                if selectionAnchorURL == url {
+                    selectionAnchorURL = firstSelectedURLInDisplayOrder()
+                }
             } else {
                 selectedIDs.insert(url)
+                selectionAnchorURL = url
             }
         } else if modifierFlags.contains(.shift) {
-            selectedIDs.insert(url)
+            selectRange(endingAt: url)
         } else {
             selectedIDs = [url]
+            selectionAnchorURL = url
         }
+    }
+
+    private func selectRange(endingAt url: URL) {
+        let anchorURL = selectionAnchorURL
+            ?? firstSelectedURLInDisplayOrder()
+            ?? url
+
+        guard let anchorIndex = items.firstIndex(where: { $0.url == anchorURL }),
+              let endIndex = items.firstIndex(where: { $0.url == url }) else {
+            selectOnly(url)
+            return
+        }
+
+        let bounds = anchorIndex <= endIndex
+            ? anchorIndex...endIndex
+            : endIndex...anchorIndex
+
+        selectedIDs = Set(items[bounds].map(\.url))
+        selectionAnchorURL = anchorURL
+    }
+
+    private func firstSelectedURLInDisplayOrder() -> URL? {
+        items.first { selectedIDs.contains($0.url) }?.url
     }
 
     func dragProvider(for item: FileItem) -> NSItemProvider {
@@ -276,7 +329,7 @@ final class FileBrowserViewModel: ObservableObject {
         do {
             try fileManager.createDirectory(at: folderURL, withIntermediateDirectories: false)
             reload()
-            selectedIDs = [folderURL]
+            selectOnly(folderURL)
             renameRequest = RenameRequest(url: folderURL, currentName: folderURL.lastPathComponent)
         } catch {
             presentError(error, action: "Create folder")
@@ -297,7 +350,7 @@ final class FileBrowserViewModel: ObservableObject {
         }
 
         reload()
-        selectedIDs = [fileURL]
+        selectOnly(fileURL)
         renameRequest = RenameRequest(url: fileURL, currentName: fileURL.lastPathComponent)
     }
 
@@ -341,7 +394,7 @@ final class FileBrowserViewModel: ObservableObject {
             try fileManager.moveItem(at: url, to: destinationURL)
             renameRequest = nil
             reload()
-            selectedIDs = [destinationURL]
+            selectOnly(destinationURL)
         } catch {
             presentError(error, action: "Rename")
         }
@@ -406,6 +459,7 @@ final class FileBrowserViewModel: ObservableObject {
 
             reload()
             selectedIDs = Set(pastedURLs)
+            selectionAnchorURL = pastedURLs.first
         } catch {
             presentError(error, action: operation.mode == .cut ? "Move" : "Copy")
         }
@@ -416,7 +470,7 @@ final class FileBrowserViewModel: ObservableObject {
             let destinationURL = uniqueDestinationURL(for: item.url, in: item.url.deletingLastPathComponent())
             try fileManager.copyItem(at: item.url, to: destinationURL)
             reload()
-            selectedIDs = [destinationURL]
+            selectOnly(destinationURL)
         } catch {
             presentError(error, action: "Duplicate")
         }
