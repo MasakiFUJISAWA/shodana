@@ -1,0 +1,2 @@
+# my-finder
+Better Finder
