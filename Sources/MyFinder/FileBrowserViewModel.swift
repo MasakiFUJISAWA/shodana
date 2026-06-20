@@ -71,16 +71,20 @@ final class FileBrowserViewModel: ObservableObject {
         iTermApplicationURL != nil
     }
 
-    var isEditingText: Bool {
+    var isTextInputActive: Bool {
         guard let firstResponder = NSApp.keyWindow?.firstResponder else {
             return false
         }
 
         if let textView = firstResponder as? NSTextView {
-            return textView.isEditable
+            return textView.isEditable && textView.isFieldEditor
         }
 
         return firstResponder is NSTextField
+    }
+
+    var canCutOrCopySelection: Bool {
+        !selectedIDs.isEmpty
     }
 
     var breadcrumbs: [Breadcrumb] {
@@ -422,6 +426,33 @@ final class FileBrowserViewModel: ObservableObject {
         writeURLsToPasteboard(urls)
     }
 
+    func handleFileCutShortcut() {
+        guard !isTextInputActive else {
+            forwardTextAction(#selector(NSText.cut(_:)))
+            return
+        }
+
+        cutSelection()
+    }
+
+    func handleFileCopyShortcut() {
+        guard !isTextInputActive else {
+            forwardTextAction(#selector(NSText.copy(_:)))
+            return
+        }
+
+        copySelection()
+    }
+
+    func handleFilePasteShortcut() {
+        guard !isTextInputActive else {
+            forwardTextAction(#selector(NSText.paste(_:)))
+            return
+        }
+
+        pasteIntoCurrentFolder()
+    }
+
     func pasteIntoCurrentFolder() {
         paste(into: currentURL)
     }
@@ -549,6 +580,21 @@ final class FileBrowserViewModel: ObservableObject {
         refreshSidebarLocations()
     }
 
+    func shareSelectionViaAirDrop() {
+        let urls = selectedURLs
+
+        guard !urls.isEmpty else {
+            return
+        }
+
+        guard let service = NSSharingService(named: .sendViaAirDrop) else {
+            presentMessage("AirDrop is not available.")
+            return
+        }
+
+        service.perform(withItems: urls)
+    }
+
     func openInTerminal(_ url: URL) {
         openDirectory(url, in: .terminal)
     }
@@ -563,8 +609,12 @@ final class FileBrowserViewModel: ObservableObject {
 
     func promptConnectToServer() {
         let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 26))
+        input.stringValue = "smb://"
         input.placeholderString = "smb://server/share"
         input.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        input.isEditable = true
+        input.isSelectable = true
+        input.usesSingleLineMode = true
 
         let alert = NSAlert()
         alert.messageText = "Connect Server"
@@ -574,6 +624,11 @@ final class FileBrowserViewModel: ObservableObject {
         alert.addButton(withTitle: "Connect")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = input
+
+        DispatchQueue.main.async {
+            alert.window.makeFirstResponder(input)
+            input.currentEditor()?.selectedRange = NSRange(location: input.stringValue.count, length: 0)
+        }
 
         let response = alert.runModal()
 
@@ -696,28 +751,36 @@ final class FileBrowserViewModel: ObservableObject {
             .appendingPathComponent("Library")
             .appendingPathComponent("CloudStorage")
 
-        if let cloudStorageContents = try? fileManager.contentsOfDirectory(
+        let cloudStorageContents = (try? fileManager.contentsOfDirectory(
             at: cloudStorageURL,
             includingPropertiesForKeys: [.isDirectoryKey, .localizedNameKey],
             options: [.skipsHiddenFiles]
-        ) {
-            urls.append(
-                contentsOf: cloudStorageContents.filter { url in
-                    isDirectory(url, fileManager: fileManager)
-                        && shouldShowCloudStorageLocation(url)
-                }
-            )
+        )) ?? []
+
+        let cloudStorageDirectories = cloudStorageContents.filter { url in
+            isUsableSidebarDirectory(url, fileManager: fileManager)
+                && shouldShowCloudStorageLocation(url)
         }
 
-        if let homeContents = try? fileManager.contentsOfDirectory(
+        urls.append(contentsOf: cloudStorageDirectories)
+
+        let shouldUseLegacyHomeCloudFolders = cloudStorageDirectories.isEmpty
+
+        if shouldUseLegacyHomeCloudFolders, let homeContents = try? fileManager.contentsOfDirectory(
             at: homeURL,
-            includingPropertiesForKeys: [.isDirectoryKey, .localizedNameKey],
+            includingPropertiesForKeys: [
+                .isDirectoryKey,
+                .isSymbolicLinkKey,
+                .isAliasFileKey,
+                .isReadableKey,
+                .localizedNameKey
+            ],
             options: [.skipsHiddenFiles]
         ) {
             urls.append(
                 contentsOf: homeContents.filter { url in
                     let name = url.lastPathComponent.lowercased()
-                    return isDirectory(url, fileManager: fileManager)
+                    return isUsableSidebarDirectory(url, fileManager: fileManager)
                         && shouldShowCloudStorageLocation(url)
                         && (name.hasPrefix("google drive") || name.hasPrefix("googledrive") || name.hasPrefix("onedrive"))
                 }
@@ -872,6 +935,26 @@ final class FileBrowserViewModel: ObservableObject {
             && !name.hasPrefix(".")
     }
 
+    private static func isUsableSidebarDirectory(_ url: URL, fileManager: FileManager) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [
+            .isDirectoryKey,
+            .isSymbolicLinkKey,
+            .isAliasFileKey,
+            .isReadableKey
+        ]) else {
+            return false
+        }
+
+        guard values.isDirectory == true,
+              values.isSymbolicLink != true,
+              values.isAliasFile != true,
+              values.isReadable != false else {
+            return false
+        }
+
+        return fileManager.fileExists(atPath: url.path)
+    }
+
     private static func rootVolumeTitle() -> String {
         let rootURL = URL(fileURLWithPath: "/", isDirectory: true)
         let values = try? rootURL.resourceValues(forKeys: [.volumeNameKey])
@@ -944,7 +1027,7 @@ final class FileBrowserViewModel: ObservableObject {
         var result: [SidebarLocation] = []
 
         for location in locations {
-            let path = location.url.standardizedFileURL.path
+            let path = sidebarDeduplicationPath(for: location.url)
 
             if seenPaths.insert(path).inserted {
                 result.append(location)
@@ -959,7 +1042,7 @@ final class FileBrowserViewModel: ObservableObject {
         var result: [SidebarLocation] = []
 
         for location in locations {
-            let path = location.url.standardizedFileURL.path
+            let path = sidebarDeduplicationPath(for: location.url)
 
             if seenPaths.insert(path).inserted {
                 result.append(location)
@@ -977,6 +1060,13 @@ final class FileBrowserViewModel: ObservableObject {
 
             return $0.title.localizedStandardCompare($1.title) == .orderedAscending
         }
+    }
+
+    private static func sidebarDeduplicationPath(for url: URL) -> String {
+        url
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
     }
 
     private func sortedItems(_ values: [FileItem]) -> [FileItem] {
@@ -1098,6 +1188,10 @@ final class FileBrowserViewModel: ObservableObject {
         ) as? [NSURL]
 
         return objects?.compactMap { $0 as URL } ?? []
+    }
+
+    private func forwardTextAction(_ selector: Selector) {
+        NSApp.sendAction(selector, to: nil, from: nil)
     }
 
     private func addFavoriteFolderFromDrop(path: String?, errorMessage: String?) {

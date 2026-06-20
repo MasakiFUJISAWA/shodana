@@ -23,31 +23,19 @@ struct BrowserCommands: Commands {
     var body: some Commands {
         CommandGroup(replacing: .pasteboard) {
             Button("Cut") {
-                if browser.isEditingText {
-                    NSApp.sendAction(#selector(NSText.cut(_:)), to: nil, from: nil)
-                } else {
-                    browser.cutSelection()
-                }
+                browser.handleFileCutShortcut()
             }
             .keyboardShortcut("x", modifiers: [.command])
-            .disabled(!browser.isEditingText && browser.selectedIDs.isEmpty)
+            .disabled(!browser.isTextInputActive && !browser.canCutOrCopySelection)
 
             Button("Copy") {
-                if browser.isEditingText {
-                    NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)
-                } else {
-                    browser.copySelection()
-                }
+                browser.handleFileCopyShortcut()
             }
             .keyboardShortcut("c", modifiers: [.command])
-            .disabled(!browser.isEditingText && browser.selectedIDs.isEmpty)
+            .disabled(!browser.isTextInputActive && !browser.canCutOrCopySelection)
 
             Button("Paste") {
-                if browser.isEditingText {
-                    NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil)
-                } else {
-                    browser.pasteIntoCurrentFolder()
-                }
+                browser.handleFilePasteShortcut()
             }
             .keyboardShortcut("v", modifiers: [.command])
         }

@@ -5,7 +5,6 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
     @State private var sidebarWidth: CGFloat = 300
-    @State private var pasteboardShortcutMonitor: Any?
 
     private let minimumSidebarWidth: CGFloat = 220
     private let maximumSidebarWidth: CGFloat = 560
@@ -36,12 +35,6 @@ struct ContentView: View {
             .frame(minWidth: 760, minHeight: 520)
         }
         .frame(minWidth: 980, minHeight: 580)
-        .onAppear {
-            installPasteboardShortcutMonitor()
-        }
-        .onDisappear {
-            removePasteboardShortcutMonitor()
-        }
         .sheet(item: $browser.renameRequest) { request in
             RenameSheet(
                 request: request,
@@ -70,56 +63,6 @@ struct ContentView: View {
         } message: {
             Text(browser.errorMessage ?? "")
         }
-    }
-
-    private func installPasteboardShortcutMonitor() {
-        guard pasteboardShortcutMonitor == nil else {
-            return
-        }
-
-        pasteboardShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard shouldHandlePasteboardShortcut(event) else {
-                return event
-            }
-
-            switch event.charactersIgnoringModifiers?.lowercased() {
-            case "x":
-                browser.cutSelection()
-                return nil
-            case "c":
-                browser.copySelection()
-                return nil
-            case "v":
-                browser.pasteIntoCurrentFolder()
-                return nil
-            default:
-                return event
-            }
-        }
-    }
-
-    private func removePasteboardShortcutMonitor() {
-        if let pasteboardShortcutMonitor {
-            NSEvent.removeMonitor(pasteboardShortcutMonitor)
-            self.pasteboardShortcutMonitor = nil
-        }
-    }
-
-    private func shouldHandlePasteboardShortcut(_ event: NSEvent) -> Bool {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-
-        guard flags.contains(.command),
-              !flags.contains(.option),
-              !flags.contains(.control),
-              !flags.contains(.shift) else {
-            return false
-        }
-
-        guard ["x", "c", "v"].contains(event.charactersIgnoringModifiers?.lowercased() ?? "") else {
-            return false
-        }
-
-        return !browser.isEditingText
     }
 }
 
@@ -334,7 +277,6 @@ struct SidebarLocationRow: View {
 
 struct BrowserToolbarView: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
-    @FocusState private var isAddressFocused: Bool
 
     var body: some View {
         HStack(spacing: 8) {
@@ -357,18 +299,13 @@ struct BrowserToolbarView: View {
                 browser.reload()
             }
 
-            TextField("Path", text: $browser.addressText)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-                .focused($isAddressFocused)
-                .onSubmit {
-                    browser.submitAddress()
-                    isAddressFocused = false
-                }
+            AddressPathField(text: $browser.addressText) {
+                browser.submitAddress()
+            }
+            .frame(height: 24)
 
             Button {
                 browser.submitAddress()
-                isAddressFocused = false
             } label: {
                 Image(systemName: "arrow.right.circle")
             }
@@ -386,6 +323,64 @@ struct BrowserToolbarView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+}
+
+struct AddressPathField: NSViewRepresentable {
+    @Binding var text: String
+
+    let onSubmit: () -> Void
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField()
+        field.isEditable = true
+        field.isSelectable = true
+        field.usesSingleLineMode = true
+        field.lineBreakMode = .byTruncatingMiddle
+        field.bezelStyle = .roundedBezel
+        field.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        field.delegate = context.coordinator
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.submit)
+        field.focusRingType = .default
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        context.coordinator.parent = self
+
+        guard field.currentEditor() == nil, field.stringValue != text else {
+            return
+        }
+
+        field.stringValue = text
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: AddressPathField
+
+        init(parent: AddressPathField) {
+            self.parent = parent
+        }
+
+        @MainActor
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else {
+                return
+            }
+
+            parent.text = field.stringValue
+        }
+
+        @MainActor
+        @objc func submit(_ sender: NSTextField) {
+            parent.text = sender.stringValue
+            parent.onSubmit()
+        }
     }
 }
 
@@ -477,6 +472,23 @@ struct FileActionBarView: View {
                 browser.trashSelection()
             }
             .disabled(browser.selectedIDs.isEmpty)
+
+            Divider()
+                .frame(height: 22)
+
+            ToolbarIconButton(systemImageName: "dot.radiowaves.left.and.right", help: "AirDrop") {
+                browser.shareSelectionViaAirDrop()
+            }
+            .disabled(browser.selectedIDs.isEmpty)
+
+            ToolbarIconButton(systemImageName: "terminal", help: "Open in Terminal") {
+                browser.openInTerminal(browser.currentURL)
+            }
+
+            ToolbarIconButton(systemImageName: "terminal.fill", help: "Open in iTerm") {
+                browser.openIniTerm(browser.currentURL)
+            }
+            .disabled(!browser.isITermAvailable)
 
             Spacer()
         }
