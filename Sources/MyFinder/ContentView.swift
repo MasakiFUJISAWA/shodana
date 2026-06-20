@@ -1,12 +1,26 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
+    @State private var sidebarWidth: CGFloat = 300
+
+    private let minimumSidebarWidth: CGFloat = 220
+    private let maximumSidebarWidth: CGFloat = 560
 
     var body: some View {
-        NavigationSplitView {
+        HStack(spacing: 0) {
             SidebarView()
-        } detail: {
+                .frame(width: sidebarWidth)
+                .frame(maxHeight: .infinity)
+
+            SidebarResizeHandle(
+                width: $sidebarWidth,
+                minimumWidth: minimumSidebarWidth,
+                maximumWidth: maximumSidebarWidth
+            )
+
             VStack(spacing: 0) {
                 BrowserToolbarView()
                 Divider()
@@ -20,7 +34,7 @@ struct ContentView: View {
             }
             .frame(minWidth: 760, minHeight: 520)
         }
-        .frame(minWidth: 940, minHeight: 580)
+        .frame(minWidth: 980, minHeight: 580)
         .sheet(item: $browser.renameRequest) { request in
             RenameSheet(
                 request: request,
@@ -52,29 +66,77 @@ struct ContentView: View {
     }
 }
 
+struct SidebarResizeHandle: View {
+    @Binding var width: CGFloat
+
+    let minimumWidth: CGFloat
+    let maximumWidth: CGFloat
+
+    @State private var dragStartWidth: CGFloat?
+    @State private var isHovering = false
+    @State private var isCursorPushed = false
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(width: 1)
+
+            Rectangle()
+                .fill(isHovering ? Color.accentColor.opacity(0.22) : Color.clear)
+                .frame(width: 8)
+        }
+        .frame(width: 8)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    if dragStartWidth == nil {
+                        dragStartWidth = width
+                    }
+
+                    let proposedWidth = (dragStartWidth ?? width) + value.translation.width
+                    width = min(max(proposedWidth, minimumWidth), maximumWidth)
+                }
+                .onEnded { _ in
+                    dragStartWidth = nil
+                }
+        )
+        .onHover { hovering in
+            isHovering = hovering
+
+            if hovering, !isCursorPushed {
+                NSCursor.resizeLeftRight.push()
+                isCursorPushed = true
+            } else if !hovering, isCursorPushed {
+                NSCursor.pop()
+                isCursorPushed = false
+            }
+        }
+        .onDisappear {
+            if isCursorPushed {
+                NSCursor.pop()
+                isCursorPushed = false
+            }
+        }
+        .help("Resize sidebar")
+        .accessibilityLabel("Resize sidebar")
+    }
+}
+
 struct SidebarView: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
     @State private var isConnectServerPresented = false
+    @State private var isFavoritesDropTargeted = false
 
     var body: some View {
         List {
             ForEach(browser.sidebarSections) { section in
-                Section(section.title) {
-                    ForEach(section.locations) { location in
-                        Button {
-                            browser.navigate(to: location.url)
-                        } label: {
-                            Label(location.title, systemImage: location.systemImageName)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.vertical, 3)
-                        .contextMenu {
-                            LocationContextMenu(location: location)
-                        }
-                    }
-                }
+                SidebarLocationsSection(
+                    section: section,
+                    acceptsFavoriteDrops: section.title == "Favorites",
+                    isDropTargeted: section.title == "Favorites" ? $isFavoritesDropTargeted : .constant(false)
+                )
             }
 
             Section("Network") {
@@ -99,7 +161,6 @@ struct SidebarView: View {
                 .padding(.vertical, 3)
             }
         }
-        .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 260)
         .sheet(isPresented: $isConnectServerPresented) {
             ConnectServerSheet(
                 onConnect: { address in
@@ -110,6 +171,60 @@ struct SidebarView: View {
                     isConnectServerPresented = false
                 }
             )
+        }
+    }
+}
+
+struct SidebarLocationsSection: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    let section: SidebarSection
+    let acceptsFavoriteDrops: Bool
+    @Binding var isDropTargeted: Bool
+
+    var body: some View {
+        if acceptsFavoriteDrops {
+            content
+                .onDrop(
+                    of: [UTType.fileURL.identifier],
+                    isTargeted: $isDropTargeted
+                ) { providers in
+                    browser.addFavoriteFolders(from: providers)
+                }
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
+        Section {
+            ForEach(section.locations) { location in
+                SidebarLocationRow(location: location)
+            }
+        } header: {
+            Text(section.title)
+                .foregroundStyle(isDropTargeted ? Color.accentColor : .secondary)
+        }
+    }
+}
+
+struct SidebarLocationRow: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    let location: SidebarLocation
+
+    var body: some View {
+        Button {
+            browser.navigate(to: location.url)
+        } label: {
+            Label(location.title, systemImage: location.systemImageName)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, 3)
+        .contextMenu {
+            LocationContextMenu(location: location)
         }
     }
 }
@@ -290,12 +405,21 @@ struct FileListView: View {
                         ForEach(browser.items) { item in
                             FileRow(item: item)
                                 .tag(item.url)
+                                .listRowBackground(
+                                    browser.selectedIDs.contains(item.url)
+                                        ? Color.accentColor.opacity(0.18)
+                                        : Color.clear
+                                )
                                 .contextMenu {
                                     FileContextMenu(item: item)
                                 }
-                                .onTapGesture(count: 2) {
+                                .simultaneousGesture(TapGesture(count: 1).onEnded {
+                                    browser.select(item)
+                                })
+                                .simultaneousGesture(TapGesture(count: 2).onEnded {
+                                    browser.select(item)
                                     browser.open(item)
-                                }
+                                })
                         }
                     }
                     .listStyle(.plain)
@@ -325,13 +449,13 @@ struct FileIconGridView: View {
                         .contextMenu {
                             FileContextMenu(item: item)
                         }
-                        .onTapGesture(count: 2) {
-                            browser.selectedIDs = [item.url]
+                        .simultaneousGesture(TapGesture(count: 1).onEnded {
+                            browser.select(item)
+                        })
+                        .simultaneousGesture(TapGesture(count: 2).onEnded {
+                            browser.select(item)
                             browser.open(item)
-                        }
-                        .onTapGesture {
-                            browser.selectedIDs = [item.url]
-                        }
+                        })
                 }
             }
             .padding(12)
@@ -351,10 +475,7 @@ struct FileIconCell: View {
 
     var body: some View {
         VStack(spacing: 7) {
-            Image(systemName: item.systemImageName)
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(item.isDirectory ? .blue : .primary)
-                .font(.system(size: 38))
+            FileSystemIcon(url: item.url, size: 46)
                 .frame(width: 52, height: 46)
 
             Text(item.displayName)
@@ -376,6 +497,18 @@ struct FileIconCell: View {
                 .stroke(isSelected ? Color.accentColor.opacity(0.55) : Color.clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
+    }
+}
+
+struct FileSystemIcon: View {
+    let url: URL
+    let size: CGFloat
+
+    var body: some View {
+        Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .frame(width: size, height: size)
     }
 }
 
@@ -434,10 +567,7 @@ struct FileRow: View {
     var body: some View {
         HStack(spacing: 0) {
             HStack(spacing: 8) {
-                Image(systemName: item.systemImageName)
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(item.isDirectory ? .blue : .primary)
-                    .frame(width: 20)
+                FileSystemIcon(url: item.url, size: 20)
 
                 Text(item.displayName)
                     .lineLimit(1)
@@ -602,6 +732,14 @@ struct LocationContextMenu: View {
 
         Button("Reveal in Finder") {
             browser.revealInFinder(location.url)
+        }
+
+        if location.canRemoveFromFavorites {
+            Divider()
+
+            Button("Remove from Favorites") {
+                browser.removeFavorite(location)
+            }
         }
     }
 }

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 @MainActor
 final class FileBrowserViewModel: ObservableObject {
@@ -19,8 +20,10 @@ final class FileBrowserViewModel: ObservableObject {
     @Published private(set) var pendingClipboardOperation: FileClipboardOperation?
     @Published private(set) var sidebarSections: [SidebarSection] = []
     @Published var viewMode: BrowserViewMode = .list
+    @Published private(set) var userFavoriteFolders: [URL] = []
 
     private let fileManager = FileManager.default
+    private let userFavoritesDefaultsKey = "MyFinder.userFavoriteFolders"
     private var history: [URL]
     private var historyIndex = 0
 
@@ -38,6 +41,7 @@ final class FileBrowserViewModel: ObservableObject {
         currentURL = initialURL
         addressText = initialURL.path
         history = [initialURL]
+        userFavoriteFolders = Self.loadUserFavoriteFolders(defaultsKey: userFavoritesDefaultsKey)
         refreshSidebarLocations()
         reload()
     }
@@ -211,6 +215,26 @@ final class FileBrowserViewModel: ObservableObject {
         }
 
         open(item)
+    }
+
+    func select(_ item: FileItem) {
+        select(item.url)
+    }
+
+    func select(_ url: URL) {
+        let modifierFlags = NSApp.currentEvent?.modifierFlags ?? []
+
+        if modifierFlags.contains(.command) {
+            if selectedIDs.contains(url) {
+                selectedIDs.remove(url)
+            } else {
+                selectedIDs.insert(url)
+            }
+        } else if modifierFlags.contains(.shift) {
+            selectedIDs.insert(url)
+        } else {
+            selectedIDs = [url]
+        }
     }
 
     func sort(by column: FileSortColumn) {
@@ -418,6 +442,35 @@ final class FileBrowserViewModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    func addFavoriteFolders(from providers: [NSItemProvider]) -> Bool {
+        var acceptedDrop = false
+
+        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            acceptedDrop = true
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { [weak self] item, error in
+                let path = Self.filePath(fromDroppedItem: item)
+                let errorMessage = error?.localizedDescription
+
+                Task { @MainActor in
+                    self?.addFavoriteFolderFromDrop(path: path, errorMessage: errorMessage)
+                }
+            }
+        }
+
+        return acceptedDrop
+    }
+
+    func removeFavorite(_ location: SidebarLocation) {
+        guard location.canRemoveFromFavorites else {
+            return
+        }
+
+        let removedPath = location.url.standardizedFileURL.path
+        userFavoriteFolders.removeAll { $0.standardizedFileURL.path == removedPath }
+        saveUserFavoriteFolders()
+        refreshSidebarLocations()
+    }
+
     func openInTerminal(_ url: URL) {
         openDirectory(url, in: .terminal)
     }
@@ -427,7 +480,7 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     func refreshSidebarLocations() {
-        sidebarSections = Self.makeSidebarSections()
+        sidebarSections = Self.makeSidebarSections(userFavoriteFolders: userFavoriteFolders)
     }
 
     func connectToServer(_ address: String) {
@@ -461,16 +514,29 @@ final class FileBrowserViewModel: ObservableObject {
         errorMessage = nil
     }
 
-    private static func makeSidebarSections() -> [SidebarSection] {
+    private static func makeSidebarSections(userFavoriteFolders: [URL]) -> [SidebarSection] {
         let fileManager = FileManager.default
         let homeURL = fileManager.homeDirectoryForCurrentUser
-        let favorites = [
+        let defaultFavorites = [
             SidebarLocation(title: "Home", systemImageName: "house", url: homeURL),
             SidebarLocation(title: "Desktop", systemImageName: "desktopcomputer", url: homeURL.appendingPathComponent("Desktop")),
             SidebarLocation(title: "Documents", systemImageName: "doc.text", url: homeURL.appendingPathComponent("Documents")),
             SidebarLocation(title: "Downloads", systemImageName: "arrow.down.circle", url: homeURL.appendingPathComponent("Downloads")),
             SidebarLocation(title: "Applications", systemImageName: "app", url: URL(fileURLWithPath: "/Applications", isDirectory: true))
         ].filter { fileManager.fileExists(atPath: $0.url.path) }
+
+        let customFavorites = userFavoriteFolders
+            .filter { fileManager.fileExists(atPath: $0.path) }
+            .map { url in
+                SidebarLocation(
+                    title: fileManager.displayName(atPath: url.path),
+                    systemImageName: "folder",
+                    url: url,
+                    canRemoveFromFavorites: true
+                )
+            }
+
+        let favorites = deduplicatedPreservingOrder(defaultFavorites + customFavorites)
 
         let locations = deduplicatedLocations(
             cloudStorageLocations(homeURL: homeURL)
@@ -482,6 +548,18 @@ final class FileBrowserViewModel: ObservableObject {
             SidebarSection(title: "Favorites", locations: favorites),
             SidebarSection(title: "Locations", locations: locations)
         ].filter { !$0.locations.isEmpty }
+    }
+
+    private static func defaultFavoriteURLs() -> [URL] {
+        let homeURL = FileManager.default.homeDirectoryForCurrentUser
+
+        return [
+            homeURL,
+            homeURL.appendingPathComponent("Desktop"),
+            homeURL.appendingPathComponent("Documents"),
+            homeURL.appendingPathComponent("Downloads"),
+            URL(fileURLWithPath: "/Applications", isDirectory: true)
+        ]
     }
 
     private static func cloudStorageLocations(homeURL: URL) -> [SidebarLocation] {
@@ -618,6 +696,27 @@ final class FileBrowserViewModel: ObservableObject {
     private static func isDirectory(_ url: URL, fileManager: FileManager) -> Bool {
         var isDirectory: ObjCBool = false
         return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    private static func loadUserFavoriteFolders(defaultsKey: String) -> [URL] {
+        UserDefaults.standard.stringArray(forKey: defaultsKey)?
+            .map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL }
+            ?? []
+    }
+
+    private static func deduplicatedPreservingOrder(_ locations: [SidebarLocation]) -> [SidebarLocation] {
+        var seenPaths: Set<String> = []
+        var result: [SidebarLocation] = []
+
+        for location in locations {
+            let path = location.url.standardizedFileURL.path
+
+            if seenPaths.insert(path).inserted {
+                result.append(location)
+            }
+        }
+
+        return result
     }
 
     private static func deduplicatedLocations(_ locations: [SidebarLocation]) -> [SidebarLocation] {
@@ -764,6 +863,62 @@ final class FileBrowserViewModel: ObservableObject {
         ) as? [NSURL]
 
         return objects?.compactMap { $0 as URL } ?? []
+    }
+
+    private func addFavoriteFolderFromDrop(path: String?, errorMessage: String?) {
+        if let errorMessage {
+            presentMessage("Add favorite failed: \(errorMessage)")
+            return
+        }
+
+        guard let path else {
+            presentMessage("Add favorite failed: unsupported dropped item.")
+            return
+        }
+
+        addFavoriteFolder(URL(fileURLWithPath: path, isDirectory: true))
+    }
+
+    private func addFavoriteFolder(_ url: URL) {
+        let folderURL = url.standardizedFileURL
+
+        guard Self.isDirectory(folderURL, fileManager: fileManager) else {
+            presentMessage("Only folders can be added to Favorites.")
+            return
+        }
+
+        let path = folderURL.path
+        let defaultFavoritePaths = Set(Self.defaultFavoriteURLs().map { $0.standardizedFileURL.path })
+        let userFavoritePaths = Set(userFavoriteFolders.map { $0.standardizedFileURL.path })
+
+        guard !defaultFavoritePaths.contains(path), !userFavoritePaths.contains(path) else {
+            return
+        }
+
+        userFavoriteFolders.append(folderURL)
+        saveUserFavoriteFolders()
+        refreshSidebarLocations()
+    }
+
+    private func saveUserFavoriteFolders() {
+        let paths = userFavoriteFolders.map { $0.standardizedFileURL.path }
+        UserDefaults.standard.set(paths, forKey: userFavoritesDefaultsKey)
+    }
+
+    private nonisolated static func filePath(fromDroppedItem item: NSSecureCoding?) -> String? {
+        if let url = item as? URL {
+            return url.path
+        }
+
+        if let data = item as? Data, let value = String(data: data, encoding: .utf8) {
+            return (URL(string: value) ?? URL(fileURLWithPath: value)).path
+        }
+
+        if let value = item as? String {
+            return (URL(string: value) ?? URL(fileURLWithPath: value)).path
+        }
+
+        return nil
     }
 
     private func openDirectory(_ url: URL, in terminalApp: TerminalApp) {

@@ -36,6 +36,19 @@ struct SidebarLocation: Identifiable, Hashable {
     let title: String
     let systemImageName: String
     let url: URL
+    let canRemoveFromFavorites: Bool
+
+    init(
+        title: String,
+        systemImageName: String,
+        url: URL,
+        canRemoveFromFavorites: Bool = false
+    ) {
+        self.title = title
+        self.systemImageName = systemImageName
+        self.url = url
+        self.canRemoveFromFavorites = canRemoveFromFavorites
+    }
 }
 
 struct SidebarSection: Identifiable, Hashable {
