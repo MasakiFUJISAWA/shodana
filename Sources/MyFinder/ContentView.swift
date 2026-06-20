@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
     @State private var sidebarWidth: CGFloat = 300
+    @State private var pasteboardShortcutMonitor: Any?
 
     private let minimumSidebarWidth: CGFloat = 220
     private let maximumSidebarWidth: CGFloat = 560
@@ -35,6 +36,12 @@ struct ContentView: View {
             .frame(minWidth: 760, minHeight: 520)
         }
         .frame(minWidth: 980, minHeight: 580)
+        .onAppear {
+            installPasteboardShortcutMonitor()
+        }
+        .onDisappear {
+            removePasteboardShortcutMonitor()
+        }
         .sheet(item: $browser.renameRequest) { request in
             RenameSheet(
                 request: request,
@@ -63,6 +70,50 @@ struct ContentView: View {
         } message: {
             Text(browser.errorMessage ?? "")
         }
+    }
+
+    private func installPasteboardShortcutMonitor() {
+        guard pasteboardShortcutMonitor == nil else {
+            return
+        }
+
+        pasteboardShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard shouldHandleFilePasteboardShortcut(event) else {
+                return event
+            }
+
+            switch event.charactersIgnoringModifiers?.lowercased() {
+            case "x":
+                browser.cutSelection()
+                return nil
+            case "c":
+                browser.copySelection()
+                return nil
+            case "v":
+                browser.pasteIntoCurrentFolder()
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+
+    private func removePasteboardShortcutMonitor() {
+        if let pasteboardShortcutMonitor {
+            NSEvent.removeMonitor(pasteboardShortcutMonitor)
+            self.pasteboardShortcutMonitor = nil
+        }
+    }
+
+    private func shouldHandleFilePasteboardShortcut(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        guard flags == .command,
+              ["x", "c", "v"].contains(event.charactersIgnoringModifiers?.lowercased() ?? "") else {
+            return false
+        }
+
+        return !browser.isTextInputActive
     }
 }
 
@@ -302,6 +353,7 @@ struct BrowserToolbarView: View {
             AddressPathField(text: $browser.addressText) {
                 browser.submitAddress()
             }
+            .frame(maxWidth: .infinity)
             .frame(height: 24)
 
             Button {
@@ -332,7 +384,7 @@ struct AddressPathField: NSViewRepresentable {
     let onSubmit: () -> Void
 
     func makeNSView(context: Context) -> NSTextField {
-        let field = NSTextField()
+        let field = ShortcutFriendlyTextField()
         field.isEditable = true
         field.isSelectable = true
         field.usesSingleLineMode = true

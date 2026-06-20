@@ -4,12 +4,18 @@ set -euo pipefail
 APP_NAME="MyFinder"
 APP_DIR=".build/release/${APP_NAME}.app"
 EXECUTABLE=".build/release/${APP_NAME}"
+ICON="Sources/MyFinder/Resources/AppIcon.icns"
 
 swift build -c release
 
 rm -rf "${APP_DIR}"
 mkdir -p "${APP_DIR}/Contents/MacOS"
+mkdir -p "${APP_DIR}/Contents/Resources"
 cp "${EXECUTABLE}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
+
+if [[ -f "${ICON}" ]]; then
+    cp "${ICON}" "${APP_DIR}/Contents/Resources/AppIcon.icns"
+fi
 
 cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -22,6 +28,8 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
     <string>dev.masakifujisawa.myfinder</string>
     <key>CFBundleName</key>
     <string>My Finder</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

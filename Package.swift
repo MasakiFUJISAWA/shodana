@@ -13,7 +13,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "MyFinder",
-            path: "Sources/MyFinder"
+            path: "Sources/MyFinder",
+            resources: [
+                .process("Resources")
+            ]
         )
     ]
 )

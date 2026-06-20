@@ -5,6 +5,12 @@ import SwiftUI
 struct MyFinderApp: App {
     @StateObject private var browser = FileBrowserViewModel()
 
+    init() {
+        if let iconImage = AppIconLoader.load() {
+            NSApplication.shared.applicationIconImage = iconImage
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -16,30 +22,28 @@ struct MyFinderApp: App {
     }
 }
 
+enum AppIconLoader {
+    static func load() -> NSImage? {
+        let candidateURLs = [
+            Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
+            Bundle.main.url(forResource: "AppIcon", withExtension: "icns")
+        ]
+
+        for url in candidateURLs.compactMap({ $0 }) {
+            if let image = NSImage(contentsOf: url) {
+                return image
+            }
+        }
+
+        return nil
+    }
+}
+
 @MainActor
 struct BrowserCommands: Commands {
     @ObservedObject var browser: FileBrowserViewModel
 
     var body: some Commands {
-        CommandGroup(replacing: .pasteboard) {
-            Button("Cut") {
-                browser.handleFileCutShortcut()
-            }
-            .keyboardShortcut("x", modifiers: [.command])
-            .disabled(!browser.isTextInputActive && !browser.canCutOrCopySelection)
-
-            Button("Copy") {
-                browser.handleFileCopyShortcut()
-            }
-            .keyboardShortcut("c", modifiers: [.command])
-            .disabled(!browser.isTextInputActive && !browser.canCutOrCopySelection)
-
-            Button("Paste") {
-                browser.handleFilePasteShortcut()
-            }
-            .keyboardShortcut("v", modifiers: [.command])
-        }
-
         CommandGroup(after: .newItem) {
             Button("New Folder") {
                 browser.createFolder()

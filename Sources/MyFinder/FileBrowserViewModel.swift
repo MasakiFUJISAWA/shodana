@@ -608,35 +608,11 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     func promptConnectToServer() {
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 26))
-        input.stringValue = "smb://"
-        input.placeholderString = "smb://server/share"
-        input.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        input.isEditable = true
-        input.isSelectable = true
-        input.usesSingleLineMode = true
-
-        let alert = NSAlert()
-        alert.messageText = "Connect Server"
-        alert.informativeText = "Enter an SMB address. You can type smb://server/share or server/share."
-        alert.alertStyle = .informational
-        alert.accessoryView = input
-        alert.addButton(withTitle: "Connect")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = input
-
-        DispatchQueue.main.async {
-            alert.window.makeFirstResponder(input)
-            input.currentEditor()?.selectedRange = NSRange(location: input.stringValue.count, length: 0)
-        }
-
-        let response = alert.runModal()
-
-        guard response == .alertFirstButtonReturn else {
+        guard let address = ConnectServerDialog().run() else {
             return
         }
 
-        connectToServer(input.stringValue)
+        connectToServer(address)
     }
 
     func connectToServer(_ address: String) {
