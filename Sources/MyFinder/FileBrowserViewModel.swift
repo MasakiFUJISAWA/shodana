@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import NetFS
 import UniformTypeIdentifiers
 
 @MainActor
@@ -21,6 +22,7 @@ final class FileBrowserViewModel: ObservableObject {
     @Published private(set) var sidebarSections: [SidebarSection] = []
     @Published var viewMode: BrowserViewMode = .list
     @Published private(set) var userFavoriteFolders: [URL] = []
+    @Published private(set) var connectedServerURLs: [URL] = []
     @Published var isConnectServerDialogPresented = false
     @Published var connectServerAddress = "smb://"
 
@@ -355,6 +357,13 @@ final class FileBrowserViewModel: ObservableObject {
             completion(fileURLString.data(using: .utf8), nil)
             return nil
         }
+        provider.registerDataRepresentation(
+            forTypeIdentifier: UTType.plainText.identifier,
+            visibility: .all
+        ) { completion in
+            completion(item.url.path.data(using: .utf8), nil)
+            return nil
+        }
 
         return provider
     }
@@ -594,7 +603,11 @@ final class FileBrowserViewModel: ObservableObject {
 
     func addFavoriteFolders(from providers: [NSItemProvider]) -> Bool {
         var acceptedDrop = false
-        let supportedTypeIdentifiers = [UTType.fileURL.identifier, UTType.url.identifier]
+        let supportedTypeIdentifiers = [
+            UTType.fileURL.identifier,
+            UTType.url.identifier,
+            UTType.plainText.identifier
+        ]
 
         for provider in providers {
             guard let typeIdentifier = supportedTypeIdentifiers.first(where: {
@@ -615,6 +628,27 @@ final class FileBrowserViewModel: ObservableObject {
         }
 
         return acceptedDrop
+    }
+
+    func addFavoriteFolder(_ url: URL) {
+        let folderURL = url.standardizedFileURL
+
+        guard Self.isDirectory(folderURL, fileManager: fileManager) else {
+            presentMessage("Only folders can be added to Favorites.")
+            return
+        }
+
+        let path = folderURL.path
+        let defaultFavoritePaths = Set(Self.defaultFavoriteURLs().map { $0.standardizedFileURL.path })
+        let userFavoritePaths = Set(userFavoriteFolders.map { $0.standardizedFileURL.path })
+
+        guard !defaultFavoritePaths.contains(path), !userFavoritePaths.contains(path) else {
+            return
+        }
+
+        userFavoriteFolders.append(folderURL)
+        saveUserFavoriteFolders()
+        refreshSidebarLocations()
     }
 
     func removeFavorite(_ location: SidebarLocation) {
@@ -664,7 +698,10 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     func refreshSidebarLocations() {
-        sidebarSections = Self.makeSidebarSections(userFavoriteFolders: userFavoriteFolders)
+        sidebarSections = Self.makeSidebarSections(
+            userFavoriteFolders: userFavoriteFolders,
+            connectedServerURLs: connectedServerURLs
+        )
     }
 
     func promptConnectToServer() {
@@ -703,10 +740,22 @@ final class FileBrowserViewModel: ObservableObject {
             return
         }
 
-        if NSWorkspace.shared.open(url) {
-            refreshSidebarLocations()
-        } else {
-            presentMessage("Could not open server address: \(normalizedAddress)")
+        Task {
+            let result = await mountNetworkURL(url)
+
+            if result.status == 0 {
+                let mountURLs = result.mountURLs
+                addConnectedServerURLs(mountURLs)
+                refreshSidebarLocations()
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.refreshSidebarLocations()
+                }
+            } else {
+                if result.status != -128 {
+                    presentMessage("Could not connect server: \(normalizedAddress) (status \(result.status))")
+                }
+            }
         }
     }
 
@@ -714,7 +763,10 @@ final class FileBrowserViewModel: ObservableObject {
         errorMessage = nil
     }
 
-    private static func makeSidebarSections(userFavoriteFolders: [URL]) -> [SidebarSection] {
+    private static func makeSidebarSections(
+        userFavoriteFolders: [URL],
+        connectedServerURLs: [URL]
+    ) -> [SidebarSection] {
         let fileManager = FileManager.default
         let homeURL = fileManager.homeDirectoryForCurrentUser
         let defaultFavorites = [
@@ -738,7 +790,10 @@ final class FileBrowserViewModel: ObservableObject {
 
         let favorites = deduplicatedPreservingOrder(defaultFavorites + customFavorites)
 
-        let locations = finderStyleLocations(homeURL: homeURL)
+        let locations = finderStyleLocations(
+            homeURL: homeURL,
+            connectedServerURLs: connectedServerURLs
+        )
 
         return [
             SidebarSection(title: "Favorites", locations: favorites),
@@ -758,12 +813,39 @@ final class FileBrowserViewModel: ObservableObject {
         ]
     }
 
-    private static func finderStyleLocations(homeURL: URL) -> [SidebarLocation] {
+    private static func finderStyleLocations(
+        homeURL: URL,
+        connectedServerURLs: [URL]
+    ) -> [SidebarLocation] {
         deduplicatedPreservingOrder(
             computerLocations()
                 + mountedVolumeLocations()
+                + connectedServerLocations(connectedServerURLs)
                 + cloudStorageLocations(homeURL: homeURL)
         )
+    }
+
+    private static func connectedServerLocations(_ urls: [URL]) -> [SidebarLocation] {
+        urls
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+            .map { url in
+                SidebarLocation(
+                    title: FileManager.default.displayName(atPath: url.path).nilIfEmpty
+                        ?? url.lastPathComponent,
+                    systemImageName: "network",
+                    url: url
+                )
+            }
+    }
+
+    private func addConnectedServerURLs(_ urls: [URL]) {
+        let existingPaths = Set(connectedServerURLs.map { $0.standardizedFileURL.path })
+        let newURLs = urls
+            .map(\.standardizedFileURL)
+            .filter { fileManager.fileExists(atPath: $0.path) }
+            .filter { !existingPaths.contains($0.path) }
+
+        connectedServerURLs.append(contentsOf: newURLs)
     }
 
     private static func computerLocations() -> [SidebarLocation] {
@@ -1252,27 +1334,6 @@ final class FileBrowserViewModel: ObservableObject {
         addFavoriteFolder(URL(fileURLWithPath: path, isDirectory: true))
     }
 
-    private func addFavoriteFolder(_ url: URL) {
-        let folderURL = url.standardizedFileURL
-
-        guard Self.isDirectory(folderURL, fileManager: fileManager) else {
-            presentMessage("Only folders can be added to Favorites.")
-            return
-        }
-
-        let path = folderURL.path
-        let defaultFavoritePaths = Set(Self.defaultFavoriteURLs().map { $0.standardizedFileURL.path })
-        let userFavoritePaths = Set(userFavoriteFolders.map { $0.standardizedFileURL.path })
-
-        guard !defaultFavoritePaths.contains(path), !userFavoritePaths.contains(path) else {
-            return
-        }
-
-        userFavoriteFolders.append(folderURL)
-        saveUserFavoriteFolders()
-        refreshSidebarLocations()
-    }
-
     private func saveUserFavoriteFolders() {
         let paths = userFavoriteFolders.map { $0.standardizedFileURL.path }
         UserDefaults.standard.set(paths, forKey: userFavoritesDefaultsKey)
@@ -1408,6 +1469,45 @@ final class FileBrowserViewModel: ObservableObject {
         value
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    private nonisolated func mountNetworkURL(_ url: URL) async -> (status: Int32, mountURLs: [URL]) {
+        await Task.detached(priority: .userInitiated) {
+            var unmanagedMountpoints: Unmanaged<CFArray>?
+            let openOptions = NSMutableDictionary()
+            openOptions["UIOption"] = "AllowUI"
+
+            let status = NetFSMountURLSync(
+                url as CFURL,
+                nil,
+                nil,
+                nil,
+                openOptions,
+                nil,
+                &unmanagedMountpoints
+            )
+
+            guard status == 0 else {
+                if let unmanagedMountpoints {
+                    _ = unmanagedMountpoints.takeRetainedValue()
+                }
+
+                return (status, [])
+            }
+
+            let mountpointValues: [String]
+
+            if let unmanagedMountpoints {
+                let mountpoints = unmanagedMountpoints.takeRetainedValue() as NSArray
+                mountpointValues = mountpoints.compactMap { $0 as? String }
+            } else {
+                mountpointValues = []
+            }
+
+            let mountURLs = mountpointValues.map { URL(fileURLWithPath: $0, isDirectory: true) }
+
+            return (status, mountURLs)
+        }.value
     }
 
     private func presentError(_ error: Error, action: String) {

@@ -238,6 +238,12 @@ struct SidebarLocationsSection: View {
             }
         }
         .padding(.bottom, 4)
+        .background {
+            if acceptsFavoriteDrops {
+                FavoritesDropTargetView(isTargeted: $isDropTargeted)
+                    .environmentObject(browser)
+            }
+        }
         .modifier(
             FavoriteDropTargetModifier(
                 isEnabled: acceptsFavoriteDrops,
@@ -257,7 +263,7 @@ struct FavoriteDropTargetModifier: ViewModifier {
     func body(content: Content) -> some View {
         if isEnabled {
             content.onDrop(
-                of: [UTType.fileURL.identifier, UTType.url.identifier],
+                of: [UTType.fileURL.identifier, UTType.url.identifier, UTType.plainText.identifier],
                 isTargeted: $isTargeted
             ) { providers in
                 browser.addFavoriteFolders(from: providers)

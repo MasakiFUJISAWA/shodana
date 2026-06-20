@@ -16,6 +16,9 @@ let package = Package(
             path: "Sources/MyFinder",
             resources: [
                 .process("Resources")
+            ],
+            linkerSettings: [
+                .linkedFramework("NetFS")
             ]
         )
     ]

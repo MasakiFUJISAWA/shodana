@@ -50,6 +50,23 @@ struct BrowserCommands: Commands {
     @ObservedObject var browser: FileBrowserViewModel
 
     var body: some Commands {
+        CommandGroup(replacing: .pasteboard) {
+            Button("Cut") {
+                browser.handleFileCutShortcut()
+            }
+            .keyboardShortcut("x", modifiers: [.command])
+
+            Button("Copy") {
+                browser.handleFileCopyShortcut()
+            }
+            .keyboardShortcut("c", modifiers: [.command])
+
+            Button("Paste") {
+                browser.handleFilePasteShortcut()
+            }
+            .keyboardShortcut("v", modifiers: [.command])
+        }
+
         CommandGroup(after: .newItem) {
             Button("New Folder") {
                 browser.createFolder()
