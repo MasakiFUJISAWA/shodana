@@ -1781,7 +1781,8 @@ final class FileBrowserViewModel: ObservableObject {
                     do script "\(escapedCommand)"
                 end tell
                 """,
-                action: "Open in Terminal"
+                action: "Open in Terminal",
+                automationTarget: "Terminal"
             )
         case .iTerm:
             guard isITermAvailable else {
@@ -1799,7 +1800,8 @@ final class FileBrowserViewModel: ObservableObject {
                     end tell
                 end tell
                 """,
-                action: "Open in iTerm"
+                action: "Open in iTerm",
+                automationTarget: "iTerm"
             )
         }
     }
@@ -1857,7 +1859,7 @@ final class FileBrowserViewModel: ObservableObject {
         return url.deletingLastPathComponent()
     }
 
-    private func runAppleScript(_ source: String, action: String) {
+    private func runAppleScript(_ source: String, action: String, automationTarget: String) {
         guard let script = NSAppleScript(source: source) else {
             presentMessage("\(action) failed: could not build AppleScript.")
             return
@@ -1869,6 +1871,15 @@ final class FileBrowserViewModel: ObservableObject {
         if let errorInfo {
             let message = errorInfo["NSAppleScriptErrorMessage"] as? String
                 ?? errorInfo.description
+            let errorNumber = errorInfo["NSAppleScriptErrorNumber"] as? Int
+
+            if errorNumber == -1743 || message.localizedCaseInsensitiveContains("not authorized") {
+                presentMessage(
+                    "\(action) needs permission to control \(automationTarget). Open System Settings > Privacy & Security > Automation, then allow Mihako to control \(automationTarget)."
+                )
+                return
+            }
+
             presentMessage("\(action) failed: \(message)")
         }
     }

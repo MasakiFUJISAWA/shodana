@@ -40,6 +40,8 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Mihako needs permission to open the current folder in Terminal or iTerm.</string>
 </dict>
 </plist>
 PLIST
