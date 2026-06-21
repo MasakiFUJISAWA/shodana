@@ -3,17 +3,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "MyFinder",
+    name: "Mihako",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "MyFinder", targets: ["MyFinder"])
+        .executable(name: "Mihako", targets: ["Mihako"])
     ],
     targets: [
         .executableTarget(
-            name: "MyFinder",
-            path: "Sources/MyFinder",
+            name: "Mihako",
+            path: "Sources/Mihako",
             resources: [
                 .process("Resources")
             ],

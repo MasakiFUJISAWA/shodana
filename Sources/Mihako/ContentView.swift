@@ -6,6 +6,7 @@ struct ContentView: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
     @State private var sidebarWidth: CGFloat = 300
     @State private var pasteboardShortcutMonitor: Any?
+    @State private var hostingWindow: NSWindow?
 
     private let minimumSidebarWidth: CGFloat = 220
     private let maximumSidebarWidth: CGFloat = 560
@@ -36,6 +37,9 @@ struct ContentView: View {
             .frame(minWidth: 760, minHeight: 520)
         }
         .frame(minWidth: 980, minHeight: 580)
+        .background {
+            WindowReader(window: $hostingWindow)
+        }
         .onAppear {
             installPasteboardShortcutMonitor()
         }
@@ -110,6 +114,10 @@ struct ContentView: View {
     }
 
     private func shouldHandleFilePasteboardShortcut(_ event: NSEvent) -> Bool {
+        guard hostingWindow == nil || hostingWindow === NSApp.keyWindow else {
+            return false
+        }
+
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
         guard flags.contains(.command),
@@ -120,6 +128,26 @@ struct ContentView: View {
         }
 
         return !browser.isTextInputActive
+    }
+}
+
+struct WindowReader: NSViewRepresentable {
+    @Binding var window: NSWindow?
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+
+        DispatchQueue.main.async {
+            window = view.window
+        }
+
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        DispatchQueue.main.async {
+            window = view.window
+        }
     }
 }
 
@@ -292,7 +320,7 @@ struct SidebarNetworkSection: View {
             Button {
                 browser.promptConnectToServer()
             } label: {
-                Label("Connect Server...", systemImage: "network")
+                Label("Connect...", systemImage: "network")
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
             }
@@ -301,7 +329,7 @@ struct SidebarNetworkSection: View {
             .padding(.vertical, 4)
 
             Button {
-                browser.refreshSidebarLocations()
+                browser.reloadLocations()
             } label: {
                 Label("Reload Locations", systemImage: "arrow.clockwise")
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -323,7 +351,7 @@ struct SidebarLocationRow: View {
 
     var body: some View {
         Button {
-            browser.navigate(to: location.url)
+            browser.open(location)
         } label: {
             Label(location.title, systemImage: location.systemImageName)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -888,15 +916,25 @@ struct ConnectServerSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Connect Server")
+                Text("Connect")
                     .font(.headline)
 
-                Text("Enter an SMB address.")
+                Text("Choose a protocol and enter a remote address.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
 
-            TextField("smb://server/share", text: $browser.connectServerAddress)
+            Picker("Protocol", selection: $browser.connectProtocol) {
+                ForEach(RemoteConnectionKind.allCases) { kind in
+                    Text(kind.displayName).tag(kind)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: browser.connectProtocol) { _, newValue in
+                browser.connectServerAddress = newValue.defaultAddress
+            }
+
+            TextField(browser.connectProtocol.placeholder, text: $browser.connectServerAddress)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: NSFont.systemFontSize, design: .monospaced))
                 .focused($isAddressFocused)
@@ -934,8 +972,8 @@ struct LocationContextMenu: View {
     let location: SidebarLocation
 
     var body: some View {
-        Button("Open") {
-            browser.navigate(to: location.url)
+        Button(location.isUnavailable ? "Reconnect" : "Open") {
+            browser.open(location)
         }
 
         Divider()
@@ -943,20 +981,31 @@ struct LocationContextMenu: View {
         Button("Open in Terminal") {
             browser.openInTerminal(location.url)
         }
+        .disabled(location.isUnavailable)
 
         Button("Open in iTerm") {
             browser.openIniTerm(location.url)
         }
-        .disabled(!browser.isITermAvailable)
+        .disabled(!browser.isITermAvailable || location.isUnavailable)
 
         Divider()
 
         Button("Copy Path") {
             browser.copyPath(location.url)
         }
+        .disabled(location.isUnavailable)
 
         Button("Reveal in Finder") {
             browser.revealInFinder(location.url)
+        }
+        .disabled(location.isUnavailable)
+
+        if location.canDisconnect {
+            Divider()
+
+            Button("Disconnect") {
+                browser.disconnect(location)
+            }
         }
 
         if location.canRemoveFromFavorites {

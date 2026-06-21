@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="MyFinder"
+APP_NAME="Mihako"
 APP_DIR=".build/release/${APP_NAME}.app"
 EXECUTABLE=".build/release/${APP_NAME}"
-ICON="Sources/MyFinder/Resources/AppIcon.icns"
+ICON="Sources/Mihako/Resources/AppIcon.icns"
 
 swift build -c release
 
@@ -25,9 +25,9 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key>
     <string>${APP_NAME}</string>
     <key>CFBundleIdentifier</key>
-    <string>dev.masakifujisawa.myfinder</string>
+    <string>dev.masakifujisawa.mihako</string>
     <key>CFBundleName</key>
-    <string>My Finder</string>
+    <string>Mihako</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundlePackageType</key>

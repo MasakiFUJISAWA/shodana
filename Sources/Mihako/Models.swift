@@ -30,24 +30,147 @@ struct RenameRequest: Identifiable {
     let currentName: String
 }
 
+enum RemoteConnectionKind: String, CaseIterable, Codable, Hashable, Identifiable {
+    case smb
+    case sftp
+    case ftp
+    case s3
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .smb:
+            return "SMB"
+        case .sftp:
+            return "SFTP"
+        case .ftp:
+            return "FTP"
+        case .s3:
+            return "S3"
+        }
+    }
+
+    var defaultAddress: String {
+        switch self {
+        case .smb:
+            return "smb://"
+        case .sftp:
+            return "sftp://"
+        case .ftp:
+            return "ftp://"
+        case .s3:
+            return "s3://"
+        }
+    }
+
+    var placeholder: String {
+        switch self {
+        case .smb:
+            return "smb://server/share"
+        case .sftp:
+            return "sftp://user@server/path"
+        case .ftp:
+            return "ftp://user@server/path"
+        case .s3:
+            return "s3://bucket/prefix"
+        }
+    }
+
+    var systemImageName: String {
+        switch self {
+        case .smb:
+            return "network"
+        case .sftp:
+            return "terminal"
+        case .ftp:
+            return "server.rack"
+        case .s3:
+            return "shippingbox"
+        }
+    }
+
+    var defaultPort: Int? {
+        switch self {
+        case .smb:
+            return nil
+        case .sftp:
+            return 22
+        case .ftp:
+            return 21
+        case .s3:
+            return nil
+        }
+    }
+
+    var canMountThroughSystem: Bool {
+        self == .smb
+    }
+}
+
 struct SidebarLocation: Identifiable, Hashable {
-    var id: URL { url }
+    var id: String {
+        connectionURL?.absoluteString ?? url.standardizedFileURL.path
+    }
 
     let title: String
     let systemImageName: String
     let url: URL
+    let connectionURL: URL?
+    let isUnavailable: Bool
     let canRemoveFromFavorites: Bool
+    let canDisconnect: Bool
 
     init(
         title: String,
         systemImageName: String,
         url: URL,
-        canRemoveFromFavorites: Bool = false
+        connectionURL: URL? = nil,
+        isUnavailable: Bool = false,
+        canRemoveFromFavorites: Bool = false,
+        canDisconnect: Bool = false
     ) {
         self.title = title
         self.systemImageName = systemImageName
         self.url = url
+        self.connectionURL = connectionURL
+        self.isUnavailable = isUnavailable
         self.canRemoveFromFavorites = canRemoveFromFavorites
+        self.canDisconnect = canDisconnect
+    }
+}
+
+struct ServerConnection: Codable, Hashable {
+    var kind: RemoteConnectionKind
+    var urlString: String
+    var mountPath: String?
+    var isUnavailable: Bool
+
+    init(
+        kind: RemoteConnectionKind = .smb,
+        urlString: String,
+        mountPath: String?,
+        isUnavailable: Bool
+    ) {
+        self.kind = kind
+        self.urlString = urlString
+        self.mountPath = mountPath
+        self.isUnavailable = isUnavailable
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case urlString
+        case mountPath
+        case isUnavailable
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decodeIfPresent(RemoteConnectionKind.self, forKey: .kind) ?? .smb
+        urlString = try container.decode(String.self, forKey: .urlString)
+        mountPath = try container.decodeIfPresent(String.self, forKey: .mountPath)
+        isUnavailable = try container.decode(Bool.self, forKey: .isUnavailable)
     }
 }
 

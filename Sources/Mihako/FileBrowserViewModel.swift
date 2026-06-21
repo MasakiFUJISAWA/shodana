@@ -22,15 +22,20 @@ final class FileBrowserViewModel: ObservableObject {
     @Published private(set) var sidebarSections: [SidebarSection] = []
     @Published var viewMode: BrowserViewMode = .list
     @Published private(set) var userFavoriteFolders: [URL] = []
-    @Published private(set) var connectedServerURLs: [URL] = []
+    @Published private(set) var serverConnections: [ServerConnection] = []
     @Published var isConnectServerDialogPresented = false
+    @Published var connectProtocol: RemoteConnectionKind = .smb
     @Published var connectServerAddress = "smb://"
 
     private let fileManager = FileManager.default
-    private let userFavoritesDefaultsKey = "MyFinder.userFavoriteFolders"
+    private let userFavoritesDefaultsKey = "Mihako.userFavoriteFolders"
+    private let legacyUserFavoritesDefaultsKey = "My" + "Finder.userFavoriteFolders"
+    private let serverConnectionsDefaultsKey = "Mihako.serverConnections"
+    private let legacyServerConnectionsDefaultsKey = "My" + "Finder.serverConnections"
     private var history: [URL]
     private var historyIndex = 0
     private var selectionAnchorURL: URL?
+    private var reconnectingServerIDs: Set<String> = []
 
     private enum TerminalApp {
         case terminal
@@ -74,9 +79,17 @@ final class FileBrowserViewModel: ObservableObject {
         currentURL = initialURL
         addressText = initialURL.path
         history = [initialURL]
-        userFavoriteFolders = Self.loadUserFavoriteFolders(defaultsKey: userFavoritesDefaultsKey)
+        userFavoriteFolders = Self.loadUserFavoriteFolders(
+            defaultsKey: userFavoritesDefaultsKey,
+            legacyDefaultsKey: legacyUserFavoritesDefaultsKey
+        )
+        serverConnections = Self.loadServerConnections(
+            defaultsKey: serverConnectionsDefaultsKey,
+            legacyDefaultsKey: legacyServerConnectionsDefaultsKey
+        )
         refreshSidebarLocations()
         reload()
+        reconnectSavedServers()
     }
 
     var canGoBack: Bool {
@@ -288,6 +301,16 @@ final class FileBrowserViewModel: ObservableObject {
         }
 
         open(item)
+    }
+
+    func open(_ location: SidebarLocation) {
+        if location.isUnavailable, let connectionURL = location.connectionURL {
+            let kind = remoteConnectionKind(for: connectionURL.absoluteString) ?? .smb
+            mountServerConnection(kind: kind, url: connectionURL, silentFailure: true)
+            return
+        }
+
+        navigate(to: location.url)
     }
 
     func select(_ item: FileItem) {
@@ -667,6 +690,37 @@ final class FileBrowserViewModel: ObservableObject {
         refreshSidebarLocations()
     }
 
+    func disconnect(_ location: SidebarLocation) {
+        guard location.canDisconnect else {
+            return
+        }
+
+        let url = location.url
+        if location.isUnavailable, let connectionURL = location.connectionURL {
+            let kind = remoteConnectionKind(for: connectionURL.absoluteString) ?? .smb
+            removeServerConnection(kind: kind, url: connectionURL)
+            refreshSidebarLocations()
+            return
+        }
+
+        do {
+            try NSWorkspace.shared.unmountAndEjectDevice(at: url)
+
+            if let connectionURL = location.connectionURL {
+                let kind = remoteConnectionKind(for: connectionURL.absoluteString) ?? .smb
+                removeServerConnection(kind: kind, url: connectionURL)
+            }
+
+            refreshSidebarLocations()
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.refreshSidebarLocations()
+            }
+        } catch {
+            presentError(error, action: "Disconnect")
+        }
+    }
+
     func shareSelectionViaAirDrop() {
         let urls = selectedURLs
 
@@ -705,12 +759,18 @@ final class FileBrowserViewModel: ObservableObject {
     func refreshSidebarLocations() {
         sidebarSections = Self.makeSidebarSections(
             userFavoriteFolders: userFavoriteFolders,
-            connectedServerURLs: connectedServerURLs
+            serverConnections: serverConnections
         )
     }
 
+    func reloadLocations() {
+        refreshSidebarLocations()
+        reconnectSavedServers()
+    }
+
     func promptConnectToServer() {
-        connectServerAddress = "smb://"
+        connectProtocol = .smb
+        connectServerAddress = connectProtocol.defaultAddress
         isConnectServerDialogPresented = true
     }
 
@@ -718,50 +778,29 @@ final class FileBrowserViewModel: ObservableObject {
         let address = connectServerAddress
         isConnectServerDialogPresented = false
 
-        connectToServer(address)
+        connectToServer(kind: connectProtocol, address: address)
     }
 
     func cancelConnectServerDialog() {
         isConnectServerDialogPresented = false
     }
 
-    func connectToServer(_ address: String) {
+    func connectToServer(kind selectedKind: RemoteConnectionKind, address: String) {
         let trimmedAddress = address.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmedAddress.isEmpty else {
             return
         }
 
-        let normalizedAddress: String
-
-        if trimmedAddress.contains("://") {
-            normalizedAddress = trimmedAddress
-        } else {
-            normalizedAddress = "smb://\(trimmedAddress)"
-        }
+        let normalizedAddress = normalizedRemoteAddress(trimmedAddress, kind: selectedKind)
+        let kind = remoteConnectionKind(for: normalizedAddress) ?? selectedKind
 
         guard let url = URL(string: normalizedAddress) else {
             presentMessage("Invalid server address: \(trimmedAddress)")
             return
         }
 
-        Task {
-            let result = await mountNetworkURL(url)
-
-            if result.status == 0 {
-                let mountURLs = result.mountURLs
-                addConnectedServerURLs(mountURLs)
-                refreshSidebarLocations()
-
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    self?.refreshSidebarLocations()
-                }
-            } else {
-                if result.status != -128 {
-                    presentMessage("Could not connect server: \(normalizedAddress) (status \(result.status))")
-                }
-            }
-        }
+        mountServerConnection(kind: kind, url: url, silentFailure: false)
     }
 
     func clearError() {
@@ -770,7 +809,7 @@ final class FileBrowserViewModel: ObservableObject {
 
     private static func makeSidebarSections(
         userFavoriteFolders: [URL],
-        connectedServerURLs: [URL]
+        serverConnections: [ServerConnection]
     ) -> [SidebarSection] {
         let fileManager = FileManager.default
         let homeURL = fileManager.homeDirectoryForCurrentUser
@@ -797,7 +836,7 @@ final class FileBrowserViewModel: ObservableObject {
 
         let locations = finderStyleLocations(
             homeURL: homeURL,
-            connectedServerURLs: connectedServerURLs
+            serverConnections: serverConnections
         )
 
         return [
@@ -820,37 +859,222 @@ final class FileBrowserViewModel: ObservableObject {
 
     private static func finderStyleLocations(
         homeURL: URL,
-        connectedServerURLs: [URL]
+        serverConnections: [ServerConnection]
     ) -> [SidebarLocation] {
         deduplicatedPreservingOrder(
             computerLocations()
+                + connectedServerLocations(serverConnections)
                 + mountedVolumeLocations()
-                + connectedServerLocations(connectedServerURLs)
                 + cloudStorageLocations(homeURL: homeURL)
         )
     }
 
-    private static func connectedServerLocations(_ urls: [URL]) -> [SidebarLocation] {
-        urls
-            .filter { FileManager.default.fileExists(atPath: $0.path) }
-            .map { url in
-                SidebarLocation(
-                    title: FileManager.default.displayName(atPath: url.path).nilIfEmpty
-                        ?? url.lastPathComponent,
-                    systemImageName: "network",
-                    url: url
+    private static func connectedServerLocations(_ connections: [ServerConnection]) -> [SidebarLocation] {
+        connections.compactMap { connection in
+            guard let connectionURL = URL(string: connection.urlString) else {
+                return nil
+            }
+            let kind = connection.kind
+
+            if let mountPath = connection.mountPath,
+               FileManager.default.fileExists(atPath: mountPath) {
+                let mountURL = URL(fileURLWithPath: mountPath, isDirectory: true)
+                let title = FileManager.default.displayName(atPath: mountURL.path).nilIfEmpty
+                    ?? mountURL.lastPathComponent
+
+                return SidebarLocation(
+                    title: remoteConnectionTitle(kind: kind, name: title, isUnavailable: false),
+                    systemImageName: kind.systemImageName,
+                    url: mountURL,
+                    connectionURL: connectionURL,
+                    canDisconnect: true
                 )
             }
+
+            return SidebarLocation(
+                title: remoteConnectionTitle(
+                    kind: kind,
+                    name: serverConnectionTitle(for: connectionURL),
+                    isUnavailable: true
+                ),
+                systemImageName: "exclamationmark.triangle",
+                url: unavailableServerPlaceholderURL(for: connectionURL, kind: kind),
+                connectionURL: connectionURL,
+                isUnavailable: true,
+                canDisconnect: true
+            )
+        }
     }
 
-    private func addConnectedServerURLs(_ urls: [URL]) {
-        let existingPaths = Set(connectedServerURLs.map { $0.standardizedFileURL.path })
-        let newURLs = urls
-            .map(\.standardizedFileURL)
-            .filter { fileManager.fileExists(atPath: $0.path) }
-            .filter { !existingPaths.contains($0.path) }
+    private static func remoteConnectionTitle(
+        kind: RemoteConnectionKind,
+        name: String,
+        isUnavailable: Bool
+    ) -> String {
+        let suffix = isUnavailable ? " unavailable" : ""
+        return "\(kind.displayName) - \(name)\(suffix)"
+    }
 
-        connectedServerURLs.append(contentsOf: newURLs)
+    private func normalizedRemoteAddress(
+        _ address: String,
+        kind: RemoteConnectionKind
+    ) -> String {
+        if address.contains("://") {
+            return address
+        }
+
+        return "\(kind.defaultAddress)\(address)"
+    }
+
+    private func remoteConnectionKind(for address: String) -> RemoteConnectionKind? {
+        guard let scheme = URL(string: address)?.scheme?.lowercased() else {
+            return nil
+        }
+
+        switch scheme {
+        case "smb", "cifs":
+            return .smb
+        case "sftp":
+            return .sftp
+        case "ftp", "ftps":
+            return .ftp
+        case "s3":
+            return .s3
+        default:
+            return nil
+        }
+    }
+
+    private static func serverConnectionTitle(for url: URL) -> String {
+        if let host = url.host, !host.isEmpty {
+            let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            return path.isEmpty ? host : "\(host)/\(path)"
+        }
+
+        return url.absoluteString
+    }
+
+    private static func unavailableServerPlaceholderURL(
+        for url: URL,
+        kind: RemoteConnectionKind
+    ) -> URL {
+        let title = "\(kind.displayName)-\(serverConnectionTitle(for: url))"
+            .replacingOccurrences(of: "/", with: "-")
+            .nilIfEmpty
+            ?? "Unavailable Server"
+
+        return URL(fileURLWithPath: "/Volumes/\(title)", isDirectory: true)
+    }
+
+    private func reconnectSavedServers() {
+        for connection in serverConnections {
+            guard let url = URL(string: connection.urlString),
+                  !isServerConnectionAvailable(connection) else {
+                continue
+            }
+
+            mountServerConnection(kind: connection.kind, url: url, silentFailure: true)
+        }
+    }
+
+    private func mountServerConnection(
+        kind: RemoteConnectionKind,
+        url: URL,
+        silentFailure: Bool
+    ) {
+        let connectionID = serverConnectionID(kind: kind, urlString: url.absoluteString)
+
+        guard reconnectingServerIDs.insert(connectionID).inserted else {
+            return
+        }
+
+        guard kind.canMountThroughSystem else {
+            reconnectingServerIDs.remove(connectionID)
+            upsertServerConnection(kind: kind, url: url, mountURL: nil, isUnavailable: true)
+            refreshSidebarLocations()
+            return
+        }
+
+        Task {
+            let result = await mountNetworkURL(url)
+            reconnectingServerIDs.remove(connectionID)
+
+            if result.status == 0, let mountURL = result.mountURLs.first {
+                upsertServerConnection(kind: kind, url: url, mountURL: mountURL, isUnavailable: false)
+                refreshSidebarLocations()
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.refreshSidebarLocations()
+                }
+                return
+            }
+
+            if hasServerConnection(kind: kind, url: url) {
+                upsertServerConnection(kind: kind, url: url, mountURL: nil, isUnavailable: true)
+                refreshSidebarLocations()
+            }
+
+            if !silentFailure, result.status != -128 {
+                presentMessage("Could not connect server: \(url.absoluteString) (status \(result.status))")
+            }
+        }
+    }
+
+    private func isServerConnectionAvailable(_ connection: ServerConnection) -> Bool {
+        guard let mountPath = connection.mountPath else {
+            return false
+        }
+
+        return fileManager.fileExists(atPath: mountPath)
+    }
+
+    private func hasServerConnection(kind: RemoteConnectionKind, url: URL) -> Bool {
+        let id = serverConnectionID(kind: kind, urlString: url.absoluteString)
+        return serverConnections.contains {
+            serverConnectionID(kind: $0.kind, urlString: $0.urlString) == id
+        }
+    }
+
+    private func upsertServerConnection(
+        kind: RemoteConnectionKind,
+        url: URL,
+        mountURL: URL?,
+        isUnavailable: Bool
+    ) {
+        let urlString = url.absoluteString
+        let mountPath = mountURL?.standardizedFileURL.path
+        let id = serverConnectionID(kind: kind, urlString: urlString)
+
+        if let index = serverConnections.firstIndex(where: {
+            serverConnectionID(kind: $0.kind, urlString: $0.urlString) == id
+        }) {
+            serverConnections[index].kind = kind
+            serverConnections[index].mountPath = mountPath
+            serverConnections[index].isUnavailable = isUnavailable
+        } else {
+            serverConnections.append(
+                ServerConnection(
+                    kind: kind,
+                    urlString: urlString,
+                    mountPath: mountPath,
+                    isUnavailable: isUnavailable
+                )
+            )
+        }
+
+        saveServerConnections()
+    }
+
+    private func removeServerConnection(kind: RemoteConnectionKind, url: URL) {
+        let id = serverConnectionID(kind: kind, urlString: url.absoluteString)
+        serverConnections.removeAll {
+            serverConnectionID(kind: $0.kind, urlString: $0.urlString) == id
+        }
+        saveServerConnections()
+    }
+
+    private func serverConnectionID(kind: RemoteConnectionKind, urlString: String) -> String {
+        "\(kind.rawValue):\(urlString)"
     }
 
     private static func computerLocations() -> [SidebarLocation] {
@@ -971,7 +1195,12 @@ final class FileBrowserViewModel: ObservableObject {
                 iconName = "externaldrive.connected.to.line.below"
             }
 
-            return SidebarLocation(title: title, systemImageName: iconName, url: url)
+            return SidebarLocation(
+                title: title,
+                systemImageName: iconName,
+                url: url,
+                canDisconnect: !isLocal || isRemovable
+            )
         }
 
         return deduplicatedPreservingOrder(locations)
@@ -1147,10 +1376,34 @@ final class FileBrowserViewModel: ObservableObject {
         return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
-    private static func loadUserFavoriteFolders(defaultsKey: String) -> [URL] {
-        UserDefaults.standard.stringArray(forKey: defaultsKey)?
-            .map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL }
-            ?? []
+    private static func loadUserFavoriteFolders(defaultsKey: String, legacyDefaultsKey: String) -> [URL] {
+        let defaults = UserDefaults.standard
+        let storedPaths = defaults.stringArray(forKey: defaultsKey)
+        let legacyPaths = storedPaths == nil ? defaults.stringArray(forKey: legacyDefaultsKey) : nil
+        let paths = storedPaths ?? legacyPaths ?? []
+
+        if storedPaths == nil, let legacyPaths {
+            defaults.set(legacyPaths, forKey: defaultsKey)
+        }
+
+        return paths.map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL }
+    }
+
+    private static func loadServerConnections(defaultsKey: String, legacyDefaultsKey: String) -> [ServerConnection] {
+        let defaults = UserDefaults.standard
+        let storedData = defaults.data(forKey: defaultsKey)
+        let legacyData = storedData == nil ? defaults.data(forKey: legacyDefaultsKey) : nil
+
+        guard let data = storedData ?? legacyData,
+              let connections = try? JSONDecoder().decode([ServerConnection].self, from: data) else {
+            return []
+        }
+
+        if storedData == nil, let legacyData {
+            defaults.set(legacyData, forKey: defaultsKey)
+        }
+
+        return connections
     }
 
     private static func deduplicatedPreservingOrder(_ locations: [SidebarLocation]) -> [SidebarLocation] {
@@ -1342,6 +1595,14 @@ final class FileBrowserViewModel: ObservableObject {
     private func saveUserFavoriteFolders() {
         let paths = userFavoriteFolders.map { $0.standardizedFileURL.path }
         UserDefaults.standard.set(paths, forKey: userFavoritesDefaultsKey)
+    }
+
+    private func saveServerConnections() {
+        guard let data = try? JSONEncoder().encode(serverConnections) else {
+            return
+        }
+
+        UserDefaults.standard.set(data, forKey: serverConnectionsDefaultsKey)
     }
 
     private nonisolated static func filePath(fromDroppedItem item: NSSecureCoding?) -> String? {

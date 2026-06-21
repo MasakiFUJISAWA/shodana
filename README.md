@@ -1,4 +1,4 @@
-# My Finder
+# Mihako
 
 Better Finder: a macOS file manager prototype that keeps the broad feel of Finder while bringing in Explorer-style file management.
 
@@ -16,12 +16,12 @@ Better Finder: a macOS file manager prototype that keeps the broad feel of Finde
 ## Run
 
 ```sh
-swift run MyFinder
+swift run Mihako
 ```
 
 ## Build an app bundle
 
 ```sh
 scripts/package-app.sh
-open .build/release/MyFinder.app
+open .build/release/Mihako.app
 ```
