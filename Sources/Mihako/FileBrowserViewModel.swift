@@ -39,6 +39,7 @@ final class FileBrowserViewModel: ObservableObject {
     private var selectionAnchorURL: URL?
     private var reconnectingServerIDs: Set<String> = []
     private var sidebarLocationOrderIDs: [String] = []
+    private var remoteReloadTask: Task<Void, Never>?
 
     private enum TerminalApp {
         case terminal
@@ -105,7 +106,11 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     var canGoUp: Bool {
-        currentURL.path != "/"
+        if isCurrentSFTP {
+            return SFTPClient.remotePath(for: currentURL) != "/"
+        }
+
+        return currentURL.path != "/"
     }
 
     var selectedItems: [FileItem] {
@@ -117,6 +122,10 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     var selectedFolderURL: URL? {
+        guard !isCurrentSFTP else {
+            return nil
+        }
+
         guard selectedIDs.count == 1,
               let item = selectedItems.first,
               item.canNavigateInto else {
@@ -154,7 +163,19 @@ final class FileBrowserViewModel: ObservableObject {
         !selectedIDs.isEmpty
     }
 
+    var isCurrentSFTP: Bool {
+        SFTPClient.isSFTPURL(currentURL)
+    }
+
+    var currentDisplayAddress: String {
+        displayString(for: currentURL)
+    }
+
     var breadcrumbs: [Breadcrumb] {
+        if isCurrentSFTP {
+            return sftpBreadcrumbs()
+        }
+
         var result: [Breadcrumb] = []
         var path = ""
 
@@ -171,8 +192,40 @@ final class FileBrowserViewModel: ObservableObject {
         return result
     }
 
+    private func sftpBreadcrumbs() -> [Breadcrumb] {
+        let path = SFTPClient.remotePath(for: currentURL)
+        let hostTitle = currentURL.host(percentEncoded: false) ?? "SFTP"
+        var result = [
+            Breadcrumb(title: hostTitle, url: SFTPClient.url(bySettingPath: "/", on: currentURL))
+        ]
+
+        guard path != "/" else {
+            return result
+        }
+
+        var accumulatedPath = ""
+        for component in path.split(separator: "/").map(String.init) {
+            accumulatedPath += "/\(component)"
+            result.append(
+                Breadcrumb(
+                    title: component,
+                    url: SFTPClient.url(bySettingPath: accumulatedPath, on: currentURL)
+                )
+            )
+        }
+
+        return result
+    }
+
     func reload() {
         refreshSidebarLocations()
+
+        if isCurrentSFTP {
+            reloadSFTPDirectory()
+            return
+        }
+
+        remoteReloadTask?.cancel()
 
         let keys: [URLResourceKey] = [
             .isDirectoryKey,
@@ -210,11 +263,83 @@ final class FileBrowserViewModel: ObservableObject {
         }
     }
 
+    private func reloadSFTPDirectory() {
+        let requestedURL = currentURL
+        let shouldShowHiddenFiles = showHiddenFiles
+        remoteReloadTask?.cancel()
+        items = []
+
+        remoteReloadTask = Task { [weak self] in
+            do {
+                let result = try await SFTPClient.listDirectory(
+                    at: requestedURL,
+                    showHiddenFiles: shouldShowHiddenFiles
+                )
+
+                await MainActor.run {
+                    guard let self, !Task.isCancelled else {
+                        return
+                    }
+
+                    self.currentURL = result.url
+                    self.addressText = self.displayString(for: result.url)
+                    self.items = self.sortedItems(result.items)
+                    self.selectedIDs = self.selectedIDs.filter { selectedURL in
+                        self.items.contains { $0.url == selectedURL }
+                    }
+
+                    if let selectionAnchorURL = self.selectionAnchorURL,
+                       !self.items.contains(where: { $0.url == selectionAnchorURL }) {
+                        self.selectionAnchorURL = self.firstSelectedURLInDisplayOrder()
+                    }
+
+                    if self.history.indices.contains(self.historyIndex),
+                       self.history[self.historyIndex] == requestedURL {
+                        self.history[self.historyIndex] = result.url
+                    }
+
+                    self.markServerConnectionAvailable(result.url)
+                }
+            } catch {
+                await MainActor.run {
+                    guard let self, !Task.isCancelled else {
+                        return
+                    }
+
+                    self.items = []
+                    self.selectedIDs.removeAll()
+                    self.selectionAnchorURL = nil
+                    self.markServerConnectionUnavailable(requestedURL)
+                    self.presentError(error, action: "Read SFTP folder")
+                }
+            }
+        }
+    }
+
     func submitAddress() {
         let rawPath = addressText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !rawPath.isEmpty else {
-            addressText = currentURL.path
+            addressText = displayString(for: currentURL)
+            return
+        }
+
+        if rawPath.lowercased().hasPrefix("sftp://") {
+            guard let targetURL = URL(string: rawPath) else {
+                addressText = displayString(for: currentURL)
+                presentMessage("Invalid SFTP URL: \(rawPath)")
+                return
+            }
+
+            navigate(to: targetURL)
+            return
+        }
+
+        if isCurrentSFTP {
+            let targetPath = rawPath.hasPrefix("/")
+                ? rawPath
+                : SFTPClient.remotePath(for: currentURL).appendingRemotePathComponent(rawPath)
+            navigate(to: SFTPClient.url(bySettingPath: targetPath, on: currentURL))
             return
         }
 
@@ -231,23 +356,28 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     func navigate(to url: URL, recordHistory: Bool = true) {
+        if SFTPClient.isSFTPURL(url) {
+            navigateToSFTP(url, recordHistory: recordHistory)
+            return
+        }
+
         let targetURL = url.standardizedFileURL
         var isDirectory: ObjCBool = false
 
         guard fileManager.fileExists(atPath: targetURL.path, isDirectory: &isDirectory) else {
-            addressText = currentURL.path
+            addressText = displayString(for: currentURL)
             presentMessage("Path does not exist: \(targetURL.path)")
             return
         }
 
         guard isDirectory.boolValue else {
             NSWorkspace.shared.open(targetURL)
-            addressText = currentURL.path
+            addressText = displayString(for: currentURL)
             return
         }
 
         currentURL = targetURL
-        addressText = targetURL.path
+        addressText = displayString(for: targetURL)
         selectedIDs.removeAll()
         selectionAnchorURL = nil
 
@@ -258,6 +388,26 @@ final class FileBrowserViewModel: ObservableObject {
 
             if history.last != targetURL {
                 history.append(targetURL)
+                historyIndex = history.count - 1
+            }
+        }
+
+        reload()
+    }
+
+    private func navigateToSFTP(_ url: URL, recordHistory: Bool) {
+        currentURL = url
+        addressText = displayString(for: url)
+        selectedIDs.removeAll()
+        selectionAnchorURL = nil
+
+        if recordHistory {
+            if historyIndex < history.count - 1 {
+                history.removeSubrange((historyIndex + 1)..<history.count)
+            }
+
+            if history.last != url {
+                history.append(url)
                 historyIndex = history.count - 1
             }
         }
@@ -288,12 +438,18 @@ final class FileBrowserViewModel: ObservableObject {
             return
         }
 
-        navigate(to: currentURL.deletingLastPathComponent())
+        if isCurrentSFTP {
+            navigate(to: SFTPClient.parentURL(for: currentURL))
+        } else {
+            navigate(to: currentURL.deletingLastPathComponent())
+        }
     }
 
     func open(_ item: FileItem) {
         if item.canNavigateInto {
             navigate(to: item.url)
+        } else if SFTPClient.isSFTPURL(item.url) {
+            downloadAndOpen(item.url)
         } else {
             NSWorkspace.shared.open(item.url)
         }
@@ -380,25 +536,73 @@ final class FileBrowserViewModel: ObservableObject {
     func dragProvider(for item: FileItem) -> NSItemProvider {
         select(item)
 
-        let provider = NSItemProvider(object: item.url as NSURL)
-        let fileURLString = item.url.absoluteString
+        let provider: NSItemProvider
+        let itemURLString = item.url.absoluteString
+
+        if SFTPClient.isSFTPURL(item.url) {
+            provider = NSItemProvider(object: itemURLString as NSString)
+        } else {
+            provider = NSItemProvider(object: item.url as NSURL)
+        }
+
         provider.suggestedName = item.displayName
+
+        if !SFTPClient.isSFTPURL(item.url) {
+            provider.registerDataRepresentation(
+                forTypeIdentifier: UTType.fileURL.identifier,
+                visibility: .all
+            ) { completion in
+                completion(itemURLString.data(using: .utf8), nil)
+                return nil
+            }
+        }
+
         provider.registerDataRepresentation(
-            forTypeIdentifier: UTType.fileURL.identifier,
+            forTypeIdentifier: UTType.url.identifier,
             visibility: .all
         ) { completion in
-            completion(fileURLString.data(using: .utf8), nil)
+            completion(itemURLString.data(using: .utf8), nil)
             return nil
         }
+
         provider.registerDataRepresentation(
             forTypeIdentifier: UTType.plainText.identifier,
             visibility: .all
         ) { completion in
-            completion(item.url.path.data(using: .utf8), nil)
+            completion((SFTPClient.isSFTPURL(item.url) ? itemURLString : item.url.path).data(using: .utf8), nil)
             return nil
         }
 
         return provider
+    }
+
+    func dropItems(from providers: [NSItemProvider], into destinationFolder: URL) -> Bool {
+        var acceptedDrop = false
+        let supportedTypeIdentifiers = [
+            UTType.fileURL.identifier,
+            UTType.url.identifier,
+            UTType.plainText.identifier
+        ]
+
+        for provider in providers {
+            guard let typeIdentifier = supportedTypeIdentifiers.first(where: {
+                provider.hasItemConformingToTypeIdentifier($0)
+            }) else {
+                continue
+            }
+
+            acceptedDrop = true
+            provider.loadItem(forTypeIdentifier: typeIdentifier, options: nil) { [weak self] item, error in
+                let droppedURL = Self.url(fromDroppedItem: item)
+                let errorMessage = error?.localizedDescription
+
+                Task { @MainActor in
+                    self?.dropItem(droppedURL, errorMessage: errorMessage, into: destinationFolder)
+                }
+            }
+        }
+
+        return acceptedDrop
     }
 
     func sort(by column: FileSortColumn) {
@@ -413,6 +617,11 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     func createFolder() {
+        if isCurrentSFTP {
+            createSFTPFolder()
+            return
+        }
+
         let folderURL = uniqueURL(
             in: currentURL,
             baseName: "New Folder",
@@ -431,6 +640,11 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     func createFile() {
+        if isCurrentSFTP {
+            createSFTPFile()
+            return
+        }
+
         let fileURL = uniqueURL(
             in: currentURL,
             baseName: "New File",
@@ -446,6 +660,46 @@ final class FileBrowserViewModel: ObservableObject {
         reload()
         selectOnly(fileURL)
         renameRequest = RenameRequest(url: fileURL, currentName: fileURL.lastPathComponent)
+    }
+
+    private func createSFTPFolder() {
+        let folderURL = uniqueRemoteURL(
+            in: currentURL,
+            baseName: "New Folder",
+            pathExtension: "",
+            copyStyle: false
+        )
+
+        Task {
+            do {
+                try await SFTPClient.createDirectory(at: folderURL)
+                reload()
+                selectOnly(folderURL)
+                renameRequest = RenameRequest(url: folderURL, currentName: folderURL.lastPathComponent)
+            } catch {
+                presentError(error, action: "Create SFTP folder")
+            }
+        }
+    }
+
+    private func createSFTPFile() {
+        let fileURL = uniqueRemoteURL(
+            in: currentURL,
+            baseName: "New File",
+            pathExtension: "txt",
+            copyStyle: false
+        )
+
+        Task {
+            do {
+                try await SFTPClient.createFile(at: fileURL)
+                reload()
+                selectOnly(fileURL)
+                renameRequest = RenameRequest(url: fileURL, currentName: fileURL.lastPathComponent)
+            } catch {
+                presentError(error, action: "Create SFTP file")
+            }
+        }
     }
 
     func beginRename(_ item: FileItem) {
@@ -479,6 +733,11 @@ final class FileBrowserViewModel: ObservableObject {
             return
         }
 
+        if SFTPClient.isSFTPURL(url) {
+            renameSFTPItem(from: url, to: SFTPClient.childURL(named: newName, in: SFTPClient.parentURL(for: url)))
+            return
+        }
+
         guard !fileManager.fileExists(atPath: destinationURL.path) else {
             presentMessage("An item named \"\(newName)\" already exists.")
             return
@@ -491,6 +750,24 @@ final class FileBrowserViewModel: ObservableObject {
             selectOnly(destinationURL)
         } catch {
             presentError(error, action: "Rename")
+        }
+    }
+
+    private func renameSFTPItem(from sourceURL: URL, to destinationURL: URL) {
+        guard !items.contains(where: { $0.url.lastPathComponent == destinationURL.lastPathComponent }) else {
+            presentMessage("An item named \"\(destinationURL.lastPathComponent)\" already exists.")
+            return
+        }
+
+        Task {
+            do {
+                try await SFTPClient.rename(from: sourceURL, to: destinationURL)
+                renameRequest = nil
+                reload()
+                selectOnly(destinationURL)
+            } catch {
+                presentError(error, action: "Rename SFTP item")
+            }
         }
     }
 
@@ -555,6 +832,11 @@ final class FileBrowserViewModel: ObservableObject {
             return
         }
 
+        if SFTPClient.isSFTPURL(destinationFolder) || operation.urls.contains(where: SFTPClient.isSFTPURL) {
+            transfer(operation.urls, into: destinationFolder, mode: operation.mode)
+            return
+        }
+
         do {
             var pastedURLs: [URL] = []
 
@@ -586,7 +868,76 @@ final class FileBrowserViewModel: ObservableObject {
         }
     }
 
+    private func transfer(_ sourceURLs: [URL], into destinationFolder: URL, mode: FileClipboardMode) {
+        let remoteSources = sourceURLs.filter(SFTPClient.isSFTPURL)
+        let localSources = sourceURLs.filter { !SFTPClient.isSFTPURL($0) }
+        let destinationIsRemote = SFTPClient.isSFTPURL(destinationFolder)
+
+        Task {
+            do {
+                if destinationIsRemote {
+                    guard remoteSources.isEmpty else {
+                        presentMessage("SFTP to SFTP copy is not supported yet.")
+                        return
+                    }
+
+                    try await SFTPClient.upload(localURLs: localSources, to: destinationFolder)
+
+                    if mode == .cut {
+                        try removeLocalItemsAfterRemoteMove(localSources)
+                    }
+                } else {
+                    if !localSources.isEmpty {
+                        try copyLocalItems(localSources, into: destinationFolder, mode: mode)
+                    }
+
+                    if !remoteSources.isEmpty {
+                        try await SFTPClient.download(remoteURLs: remoteSources, to: destinationFolder)
+
+                        if mode == .cut {
+                            try await SFTPClient.remove(remoteSources)
+                        }
+                    }
+                }
+
+                if mode == .cut {
+                    pendingClipboardOperation = nil
+                }
+
+                reload()
+            } catch {
+                presentError(error, action: mode == .cut ? "Move" : "Copy")
+            }
+        }
+    }
+
+    private func copyLocalItems(_ sourceURLs: [URL], into destinationFolder: URL, mode: FileClipboardMode) throws {
+        for sourceURL in sourceURLs {
+            let destinationURL = uniqueDestinationURL(for: sourceURL, in: destinationFolder)
+
+            if mode == .cut {
+                if sourceURL != destinationURL {
+                    try fileManager.moveItem(at: sourceURL, to: destinationURL)
+                }
+            } else {
+                try fileManager.copyItem(at: sourceURL, to: destinationURL)
+            }
+        }
+    }
+
+    private func removeLocalItemsAfterRemoteMove(_ urls: [URL]) throws {
+        for url in urls {
+            var resultingURL: NSURL?
+            try fileManager.trashItem(at: url, resultingItemURL: &resultingURL)
+        }
+    }
+
     func duplicate(_ item: FileItem) {
+        if SFTPClient.isSFTPURL(item.url) {
+            duplicateSFTPItem(item)
+            return
+        }
+
         do {
             let destinationURL = uniqueDestinationURL(for: item.url, in: item.url.deletingLastPathComponent())
             try fileManager.copyItem(at: item.url, to: destinationURL)
@@ -597,10 +948,38 @@ final class FileBrowserViewModel: ObservableObject {
         }
     }
 
+    private func duplicateSFTPItem(_ item: FileItem) {
+        let baseName = item.isDirectory || item.url.pathExtension.isEmpty
+            ? item.url.lastPathComponent
+            : item.url.deletingPathExtension().lastPathComponent
+        let pathExtension = item.isDirectory ? "" : item.url.pathExtension
+        let destinationURL = uniqueRemoteURL(
+            in: SFTPClient.parentURL(for: item.url),
+            baseName: baseName,
+            pathExtension: pathExtension,
+            copyStyle: true
+        )
+
+        Task {
+            do {
+                try await SFTPClient.duplicate(from: item.url, to: destinationURL)
+                reload()
+                selectOnly(destinationURL)
+            } catch {
+                presentError(error, action: "Duplicate SFTP item")
+            }
+        }
+    }
+
     func trashSelection() {
         let urls = selectedURLs
 
         guard !urls.isEmpty else {
+            return
+        }
+
+        if urls.contains(where: SFTPClient.isSFTPURL) {
+            deleteSFTPItems(urls)
             return
         }
 
@@ -616,6 +995,17 @@ final class FileBrowserViewModel: ObservableObject {
         }
     }
 
+    private func deleteSFTPItems(_ urls: [URL]) {
+        Task {
+            do {
+                try await SFTPClient.remove(urls)
+                reload()
+            } catch {
+                presentError(error, action: "Delete SFTP item")
+            }
+        }
+    }
+
     func copyPath(_ item: FileItem) {
         copyPath(item.url)
     }
@@ -623,7 +1013,7 @@ final class FileBrowserViewModel: ObservableObject {
     func copyPath(_ url: URL) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(url.path, forType: .string)
+        pasteboard.setString(displayString(for: url), forType: .string)
     }
 
     func revealInFinder(_ item: FileItem) {
@@ -631,6 +1021,11 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     func revealInFinder(_ url: URL) {
+        guard !SFTPClient.isSFTPURL(url) else {
+            presentMessage("Reveal in Finder is not available for SFTP locations.")
+            return
+        }
+
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
@@ -701,6 +1096,19 @@ final class FileBrowserViewModel: ObservableObject {
         }
 
         let url = location.url
+        if let connectionURL = location.connectionURL,
+           (remoteConnectionKind(for: connectionURL.absoluteString) ?? .smb) == .sftp {
+            removeServerConnection(kind: .sftp, url: connectionURL)
+            refreshSidebarLocations()
+
+            if SFTPClient.isSFTPURL(currentURL),
+               currentURL.host(percentEncoded: false) == connectionURL.host(percentEncoded: false) {
+                navigate(to: fileManager.homeDirectoryForCurrentUser)
+            }
+
+            return
+        }
+
         if location.isUnavailable, let connectionURL = location.connectionURL {
             let kind = remoteConnectionKind(for: connectionURL.absoluteString) ?? .smb
             removeServerConnection(kind: kind, url: connectionURL)
@@ -730,6 +1138,11 @@ final class FileBrowserViewModel: ObservableObject {
         let urls = selectedURLs
 
         guard !urls.isEmpty else {
+            return
+        }
+
+        guard !urls.contains(where: SFTPClient.isSFTPURL) else {
+            presentMessage("AirDrop is not available for SFTP items.")
             return
         }
 
@@ -925,6 +1338,21 @@ final class FileBrowserViewModel: ObservableObject {
             }
             let kind = connection.kind
 
+            if kind == .sftp {
+                return SidebarLocation(
+                    title: remoteConnectionTitle(
+                        for: connection,
+                        fallbackName: serverConnectionTitle(for: connectionURL),
+                        isUnavailable: connection.isUnavailable
+                    ),
+                    systemImageName: connection.isUnavailable ? "exclamationmark.triangle" : kind.systemImageName,
+                    url: connectionURL,
+                    connectionURL: connectionURL,
+                    isUnavailable: connection.isUnavailable,
+                    canDisconnect: true
+                )
+            }
+
             if let mountPath = connection.mountPath,
                FileManager.default.fileExists(atPath: mountPath) {
                 let mountURL = URL(fileURLWithPath: mountPath, isDirectory: true)
@@ -1058,6 +1486,11 @@ final class FileBrowserViewModel: ObservableObject {
         displayName: String?,
         silentFailure: Bool
     ) {
+        if kind == .sftp {
+            connectSFTPServer(url: url, displayName: displayName, silentFailure: silentFailure)
+            return
+        }
+
         let connectionID = serverConnectionID(kind: kind, urlString: url.absoluteString)
 
         guard reconnectingServerIDs.insert(connectionID).inserted else {
@@ -1108,7 +1541,53 @@ final class FileBrowserViewModel: ObservableObject {
         }
     }
 
+    private func connectSFTPServer(url: URL, displayName: String?, silentFailure: Bool) {
+        let connectionID = serverConnectionID(kind: .sftp, urlString: url.absoluteString)
+
+        guard reconnectingServerIDs.insert(connectionID).inserted else {
+            return
+        }
+
+        Task {
+            do {
+                let resolvedURL = try await SFTPClient.resolvedDirectoryURL(for: url)
+                reconnectingServerIDs.remove(connectionID)
+                upsertServerConnection(
+                    kind: .sftp,
+                    url: resolvedURL,
+                    replacing: url,
+                    displayName: displayName,
+                    mountURL: nil,
+                    isUnavailable: false
+                )
+                refreshSidebarLocations()
+
+                if !silentFailure {
+                    navigate(to: resolvedURL)
+                }
+            } catch {
+                reconnectingServerIDs.remove(connectionID)
+                upsertServerConnection(
+                    kind: .sftp,
+                    url: url,
+                    displayName: displayName,
+                    mountURL: nil,
+                    isUnavailable: true
+                )
+                refreshSidebarLocations()
+
+                if !silentFailure {
+                    presentError(error, action: "Connect SFTP")
+                }
+            }
+        }
+    }
+
     private func isServerConnectionAvailable(_ connection: ServerConnection) -> Bool {
+        if connection.kind == .sftp {
+            return !connection.isUnavailable
+        }
+
         guard let mountPath = connection.mountPath else {
             return false
         }
@@ -1133,6 +1612,7 @@ final class FileBrowserViewModel: ObservableObject {
     private func upsertServerConnection(
         kind: RemoteConnectionKind,
         url: URL,
+        replacing oldURL: URL? = nil,
         displayName: String?,
         mountURL: URL?,
         isUnavailable: Bool
@@ -1140,6 +1620,13 @@ final class FileBrowserViewModel: ObservableObject {
         let urlString = url.absoluteString
         let mountPath = mountURL?.standardizedFileURL.path
         let id = serverConnectionID(kind: kind, urlString: urlString)
+
+        if let oldURL, oldURL.absoluteString != urlString {
+            let oldID = serverConnectionID(kind: kind, urlString: oldURL.absoluteString)
+            serverConnections.removeAll {
+                serverConnectionID(kind: $0.kind, urlString: $0.urlString) == oldID
+            }
+        }
 
         if let index = serverConnections.firstIndex(where: {
             serverConnectionID(kind: $0.kind, urlString: $0.urlString) == id
@@ -1163,6 +1650,32 @@ final class FileBrowserViewModel: ObservableObject {
         }
 
         saveServerConnections()
+    }
+
+    private func markServerConnectionAvailable(_ url: URL) {
+        guard SFTPClient.isSFTPURL(url),
+              let index = serverConnections.firstIndex(where: {
+                  $0.kind == .sftp && $0.urlString == url.absoluteString
+              }) else {
+            return
+        }
+
+        serverConnections[index].isUnavailable = false
+        saveServerConnections()
+        refreshSidebarLocations()
+    }
+
+    private func markServerConnectionUnavailable(_ url: URL) {
+        guard SFTPClient.isSFTPURL(url),
+              let index = serverConnections.firstIndex(where: {
+                  $0.kind == .sftp && $0.urlString == url.absoluteString
+              }) else {
+            return
+        }
+
+        serverConnections[index].isUnavailable = true
+        saveServerConnections()
+        refreshSidebarLocations()
     }
 
     private func removeServerConnection(kind: RemoteConnectionKind, url: URL) {
@@ -1646,6 +2159,44 @@ final class FileBrowserViewModel: ObservableObject {
         )
     }
 
+    private func uniqueRemoteURL(
+        in folder: URL,
+        baseName: String,
+        pathExtension: String,
+        copyStyle: Bool
+    ) -> URL {
+        let existingNames = Set(items.map(\.name))
+
+        func makeName(_ name: String) -> String {
+            if pathExtension.isEmpty {
+                return name
+            }
+
+            return "\(name).\(pathExtension)"
+        }
+
+        let firstName = makeName(baseName)
+
+        guard existingNames.contains(firstName) else {
+            return SFTPClient.childURL(named: firstName, in: folder)
+        }
+
+        var index = 2
+
+        while true {
+            let suffix = copyStyle
+                ? (index == 2 ? " copy" : " copy \(index)")
+                : " \(index)"
+            let candidateName = makeName("\(baseName)\(suffix)")
+
+            if !existingNames.contains(candidateName) {
+                return SFTPClient.childURL(named: candidateName, in: folder)
+            }
+
+            index += 1
+        }
+    }
+
     private func uniqueURL(
         in folder: URL,
         baseName: String,
@@ -1707,6 +2258,21 @@ final class FileBrowserViewModel: ObservableObject {
         return objects?.compactMap { $0 as URL } ?? []
     }
 
+    private func downloadAndOpen(_ url: URL) {
+        let destinationFolder = fileManager.temporaryDirectory
+            .appendingPathComponent("MihakoRemoteOpen", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+
+        Task {
+            do {
+                try await SFTPClient.download(remoteURLs: [url], to: destinationFolder)
+                NSWorkspace.shared.open(destinationFolder.appendingPathComponent(url.lastPathComponent))
+            } catch {
+                presentError(error, action: "Open SFTP item")
+            }
+        }
+    }
+
     private func forwardTextAction(_ selector: Selector) {
         NSApp.sendAction(selector, to: nil, from: nil)
     }
@@ -1723,6 +2289,20 @@ final class FileBrowserViewModel: ObservableObject {
         }
 
         addFavoriteFolder(URL(fileURLWithPath: path, isDirectory: true))
+    }
+
+    private func dropItem(_ url: URL?, errorMessage: String?, into destinationFolder: URL) {
+        if let errorMessage {
+            presentMessage("Drop failed: \(errorMessage)")
+            return
+        }
+
+        guard let url else {
+            presentMessage("Drop failed: unsupported dropped item.")
+            return
+        }
+
+        transfer([url], into: destinationFolder, mode: .copy)
     }
 
     private func saveUserFavoriteFolders() {
@@ -1751,6 +2331,10 @@ final class FileBrowserViewModel: ObservableObject {
         refreshSidebarLocations()
     }
 
+    private func displayString(for url: URL) -> String {
+        SFTPClient.isSFTPURL(url) ? SFTPClient.displayString(for: url) : url.path
+    }
+
     private nonisolated static func filePath(fromDroppedItem item: NSSecureCoding?) -> String? {
         if let url = item as? URL {
             return url.path
@@ -1767,7 +2351,47 @@ final class FileBrowserViewModel: ObservableObject {
         return nil
     }
 
+    private nonisolated static func url(fromDroppedItem item: NSSecureCoding?) -> URL? {
+        if let url = item as? URL {
+            return url
+        }
+
+        if let url = item as? NSURL {
+            return url as URL
+        }
+
+        if let data = item as? Data, let value = String(data: data, encoding: .utf8) {
+            return url(fromDroppedString: value)
+        }
+
+        if let value = item as? String {
+            return url(fromDroppedString: value)
+        }
+
+        return nil
+    }
+
+    private nonisolated static func url(fromDroppedString value: String) -> URL? {
+        let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedValue.isEmpty else {
+            return nil
+        }
+
+        if let url = URL(string: trimmedValue),
+           url.scheme != nil {
+            return url
+        }
+
+        return URL(fileURLWithPath: trimmedValue)
+    }
+
     private func openDirectory(_ url: URL, in terminalApp: TerminalApp) {
+        guard !SFTPClient.isSFTPURL(url) else {
+            presentMessage("Open in Terminal is not available for SFTP locations.")
+            return
+        }
+
         let directoryURL = directoryURL(for: url)
         let command = "cd \(shellQuoted(directoryURL.path))"
         let escapedCommand = appleScriptEscaped(command)
@@ -1967,5 +2591,13 @@ private extension NSResponder {
 private extension String {
     var nilIfEmpty: String? {
         isEmpty ? nil : self
+    }
+
+    func appendingRemotePathComponent(_ component: String) -> String {
+        if self == "/" {
+            return "/\(component)"
+        }
+
+        return "\(self)/\(component)"
     }
 }

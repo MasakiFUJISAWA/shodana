@@ -193,7 +193,7 @@ struct Breadcrumb: Identifiable, Hashable {
     let url: URL
 }
 
-struct FileItem: Identifiable, Hashable {
+struct FileItem: Identifiable, Hashable, Sendable {
     var id: URL { url }
 
     let url: URL

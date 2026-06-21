@@ -674,11 +674,12 @@ struct FileActionBarView: View {
             ToolbarIconButton(systemImageName: "terminal", help: "Open in Terminal") {
                 browser.openInTerminal(browser.currentURL)
             }
+            .disabled(browser.isCurrentSFTP)
 
             ToolbarIconButton(systemImageName: "terminal.fill", help: "Open in iTerm") {
                 browser.openIniTerm(browser.currentURL)
             }
-            .disabled(!browser.isITermAvailable)
+            .disabled(!browser.isITermAvailable || browser.isCurrentSFTP)
 
             Divider()
                 .frame(height: 22)
@@ -734,6 +735,12 @@ struct FileListView: View {
         .onTapGesture {
             browser.activateFilePane()
         }
+        .onDrop(
+            of: [UTType.fileURL.identifier, UTType.url.identifier, UTType.plainText.identifier],
+            isTargeted: nil
+        ) { providers in
+            browser.dropItems(from: providers, into: browser.currentURL)
+        }
         .contextMenu {
             FolderContextMenu()
         }
@@ -784,6 +791,16 @@ struct FileListRowContainer: View {
             .onDrag {
                 browser.dragProvider(for: item)
             }
+            .onDrop(
+                of: [UTType.fileURL.identifier, UTType.url.identifier, UTType.plainText.identifier],
+                isTargeted: nil
+            ) { providers in
+                guard item.canNavigateInto else {
+                    return false
+                }
+
+                return browser.dropItems(from: providers, into: item.url)
+            }
     }
 }
 
@@ -811,6 +828,16 @@ struct FileIconGridView: View {
                         })
                         .onDrag {
                             browser.dragProvider(for: item)
+                        }
+                        .onDrop(
+                            of: [UTType.fileURL.identifier, UTType.url.identifier, UTType.plainText.identifier],
+                            isTargeted: nil
+                        ) { providers in
+                            guard item.canNavigateInto else {
+                                return false
+                            }
+
+                            return browser.dropItems(from: providers, into: item.url)
                         }
                 }
             }
@@ -999,15 +1026,17 @@ struct FileContextMenu: View {
         Button("Reveal in Finder") {
             browser.revealInFinder(item)
         }
+        .disabled(SFTPClient.isSFTPURL(item.url))
 
         Button("Open in Terminal") {
             browser.openInTerminal(item.url)
         }
+        .disabled(SFTPClient.isSFTPURL(item.url))
 
         Button("Open in iTerm") {
             browser.openIniTerm(item.url)
         }
-        .disabled(!browser.isITermAvailable)
+        .disabled(!browser.isITermAvailable || SFTPClient.isSFTPURL(item.url))
 
         Divider()
 
@@ -1041,11 +1070,12 @@ struct FolderContextMenu: View {
         Button("Open in Terminal") {
             browser.openInTerminal(browser.currentURL)
         }
+        .disabled(browser.isCurrentSFTP)
 
         Button("Open in iTerm") {
             browser.openIniTerm(browser.currentURL)
         }
-        .disabled(!browser.isITermAvailable)
+        .disabled(!browser.isITermAvailable || browser.isCurrentSFTP)
 
         Divider()
 
@@ -1056,6 +1086,7 @@ struct FolderContextMenu: View {
         Button("Reveal in Finder") {
             browser.revealInFinder(browser.currentURL)
         }
+        .disabled(browser.isCurrentSFTP)
     }
 }
 
@@ -1143,12 +1174,12 @@ struct LocationContextMenu: View {
         Button("Open in Terminal") {
             browser.openInTerminal(location.url)
         }
-        .disabled(location.isUnavailable)
+        .disabled(location.isUnavailable || SFTPClient.isSFTPURL(location.url))
 
         Button("Open in iTerm") {
             browser.openIniTerm(location.url)
         }
-        .disabled(!browser.isITermAvailable || location.isUnavailable)
+        .disabled(!browser.isITermAvailable || location.isUnavailable || SFTPClient.isSFTPURL(location.url))
 
         Divider()
 
@@ -1160,7 +1191,7 @@ struct LocationContextMenu: View {
         Button("Reveal in Finder") {
             browser.revealInFinder(location.url)
         }
-        .disabled(location.isUnavailable)
+        .disabled(location.isUnavailable || SFTPClient.isSFTPURL(location.url))
 
         if location.canDisconnect {
             Divider()
@@ -1198,7 +1229,7 @@ struct StatusBarView: View {
 
             Spacer()
 
-            Text(browser.currentURL.path)
+            Text(browser.currentDisplayAddress)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .foregroundStyle(.secondary)
