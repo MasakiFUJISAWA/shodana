@@ -7,6 +7,7 @@ struct MihakoApp: App {
 
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
+        AppAppearance.applySavedMode()
 
         if let iconImage = AppIconLoader.load() {
             NSApplication.shared.applicationIconImage = iconImage
@@ -39,6 +40,19 @@ struct BrowserWindowView: View {
                 MihakoApplicationDelegate.openNewWindow = {
                     openWindow(id: "browser")
                 }
+                ExternalOpenRouter.configure {
+                    openWindow(id: "browser")
+                }
+
+                AppMenuLocalizer.apply()
+
+                DispatchQueue.main.async {
+                    AppMenuLocalizer.apply()
+                }
+
+                if let pendingURL = ExternalOpenRouter.consumeNextPendingURL() {
+                    browser.openExternalDestination(pendingURL)
+                }
             }
     }
 }
@@ -46,6 +60,14 @@ struct BrowserWindowView: View {
 @MainActor
 final class MihakoApplicationDelegate: NSObject, NSApplicationDelegate {
     static var openNewWindow: (() -> Void)?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        AppMenuLocalizer.apply()
+
+        DispatchQueue.main.async {
+            AppMenuLocalizer.apply()
+        }
+    }
 
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
@@ -61,6 +83,20 @@ final class MihakoApplicationDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openNewWindowFromDock(_ sender: Any?) {
         Self.openNewWindow?()
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        ExternalOpenRouter.enqueue(urls)
+    }
+
+    func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        ExternalOpenRouter.enqueue([URL(fileURLWithPath: filename)])
+        return true
+    }
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        ExternalOpenRouter.enqueue(filenames.map { URL(fileURLWithPath: $0) })
+        sender.reply(toOpenOrPrint: .success)
     }
 }
 
@@ -164,6 +200,17 @@ struct BrowserCommands: Commands {
                 browser?.showExternalToolsSettings()
             }
             .disabled(browser == nil)
+
+            Divider()
+
+            Menu(L10n.string("Appearance")) {
+                ForEach(AppAppearanceMode.allCases) { mode in
+                    Button(L10n.string(mode.titleKey)) {
+                        browser?.setAppAppearanceMode(mode)
+                    }
+                    .disabled(browser == nil || browser?.appAppearanceMode == mode)
+                }
+            }
 
             Divider()
 

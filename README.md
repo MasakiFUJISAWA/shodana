@@ -33,6 +33,7 @@ Mihako は Swift / SwiftUI / AppKit で作っている macOS アプリです。S
 - 外部ツールボタンの追加、変更、削除、並び替え
 - 外部ツールボタンに起動先アプリのアイコン、または任意の SF Symbol を表示
 - 日本語/英語の表示切り替え
+- システム、ライト、ダークの外観切り替え
 
 ## 必要なもの
 
@@ -190,6 +191,59 @@ Mihako は日本語と英語に対応しています。初期状態は `System` 
 - `Japanese`: 日本語で表示する
 
 翻訳ファイルは `Sources/Mihako/Resources/en.lproj/Localizable.strings` と `Sources/Mihako/Resources/ja.lproj/Localizable.strings` で管理しています。現時点ではアプリ本体に同梱して管理し、別パッケージには分けていません。
+
+## 外観設定
+
+Mihako はライトモードとダークモードに対応しています。メニューバーの `Appearance` から次を選べます。
+
+- `Use System Appearance`: macOS の外観設定に従う
+- `Light`: ライトモードで固定する
+- `Dark`: ダークモードで固定する
+
+macOS の Appearance が `Auto` の場合、Mihako 側を `Use System Appearance` にしておくと、macOS と同じく昼はライト、夜はダークに切り替わります。
+
+## 外部からMihakoを開く
+
+Mihako は外部からフォルダを開くための入口を用意しています。配布用 app を作ると、次のURLスキームとフォルダ文書タイプがInfo.plistに登録されます。
+
+- URLスキーム: `mihako://`
+- フォルダタイプ: `public.folder` / `public.directory`
+
+例えばターミナルからDownloadsをMihakoで開く場合は次です。
+
+```sh
+open "mihako://open?path=$HOME/Downloads"
+```
+
+ローカルフォルダをMihakoアプリへ直接渡すこともできます。
+
+```sh
+open -a /Applications/Mihako.app "$HOME/Downloads"
+```
+
+SFTPやS3のURLを渡す場合は、`url=` にURLを指定します。
+
+```sh
+open "mihako://open?url=sftp://dm-backend-ec2/opt/"
+open "mihako://open?url=s3://bucket-name/prefix/"
+```
+
+### Dock用Downloadsランチャー
+
+FinderのDockスタックそのものを完全に置き換えることはmacOSの制約上できませんが、MihakoでDownloadsを開く小さなランチャーappを作ってDockに置くことはできます。
+
+```sh
+scripts/create-open-in-mihako-launcher.sh
+open ".build/Mihako Downloads.app"
+```
+
+作られた `.build/Mihako Downloads.app` をDockへドラッグしておくと、DockからMihakoでDownloadsを開けます。別のフォルダ用に作る場合は、第一引数にフォルダパス、第二引数に出力先appを指定します。
+
+```sh
+scripts/create-open-in-mihako-launcher.sh "$HOME/Documents" ".build/Mihako Documents.app"
+```
+
+なお、macOSではFinderが特別扱いされるため、Dockの標準Downloadsスタック、Finderを明示的に呼ぶアプリ、保存/選択ダイアログなどはFinderのままです。Mihako側では、Launch ServicesやURLスキーム経由で渡ってくるフォルダを受け取れるようにしています。
 
 ## 接続機能
 

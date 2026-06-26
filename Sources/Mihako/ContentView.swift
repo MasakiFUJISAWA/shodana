@@ -1137,9 +1137,7 @@ struct FileListRowContainer: View {
                 browser.select(item)
                 browser.open(item)
             })
-            .onDrag {
-                browser.dragProvider(for: item)
-            }
+            .overlay(FileDragInteractionView(item: item).environmentObject(browser))
             .onDrop(
                 of: MihakoTransferType.urlDropTypeIdentifiers,
                 isTargeted: nil
@@ -1175,9 +1173,7 @@ struct FileIconGridView: View {
                             browser.select(item)
                             browser.open(item)
                         })
-                        .onDrag {
-                            browser.dragProvider(for: item)
-                        }
+                        .overlay(FileDragInteractionView(item: item).environmentObject(browser))
                         .onDrop(
                             of: MihakoTransferType.urlDropTypeIdentifiers,
                             isTargeted: nil
@@ -1193,6 +1189,107 @@ struct FileIconGridView: View {
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
+    }
+}
+
+struct FileDragInteractionView: NSViewRepresentable {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    let item: FileItem
+
+    func makeNSView(context: Context) -> FileDragInteractionNSView {
+        FileDragInteractionNSView()
+    }
+
+    func updateNSView(_ view: FileDragInteractionNSView, context: Context) {
+        view.browser = browser
+        view.item = item
+    }
+}
+
+@MainActor
+final class FileDragInteractionNSView: NSView, NSDraggingSource {
+    weak var browser: FileBrowserViewModel?
+    var item: FileItem?
+
+    private var mouseDownEvent: NSEvent?
+    private var didStartDrag = false
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        switch NSApp.currentEvent?.type {
+        case .rightMouseDown, .rightMouseDragged, .rightMouseUp, .otherMouseDown, .otherMouseDragged, .otherMouseUp:
+            return nil
+        default:
+            return super.hitTest(point)
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let browser, let item else {
+            return
+        }
+
+        didStartDrag = false
+        mouseDownEvent = event
+        browser.activateFilePane()
+
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if !browser.selectedIDs.contains(item.url) || flags.contains(.command) || flags.contains(.shift) {
+            browser.select(item)
+        }
+
+        if event.clickCount == 2 {
+            browser.open(item)
+            mouseDownEvent = nil
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard !didStartDrag,
+              let browser,
+              let item,
+              let mouseDownEvent else {
+            return
+        }
+
+        let urls = browser.draggedURLsForDraggingSession(for: item)
+        let location = convert(mouseDownEvent.locationInWindow, from: nil)
+        let draggingItems = urls.enumerated().map { index, url in
+            let draggingItem = NSDraggingItem(pasteboardWriter: browser.pasteboardWriter(forDraggedURL: url))
+            let offset = CGFloat(index) * 3
+            draggingItem.setDraggingFrame(
+                NSRect(x: location.x - 16 + offset, y: location.y - 16 - offset, width: 32, height: 32),
+                contents: browser.dragImage(forDraggedURL: url)
+            )
+            return draggingItem
+        }
+
+        guard !draggingItems.isEmpty else {
+            return
+        }
+
+        didStartDrag = true
+        beginDraggingSession(with: draggingItems, event: mouseDownEvent, source: self)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        mouseDownEvent = nil
+        didStartDrag = false
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        nextResponder?.rightMouseDown(with: event)
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        .copy
+    }
+
+    func ignoreModifierKeys(for session: NSDraggingSession) -> Bool {
+        false
     }
 }
 

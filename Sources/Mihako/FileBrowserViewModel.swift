@@ -30,6 +30,7 @@ final class FileBrowserViewModel: ObservableObject {
     @Published var connectAWSProfile = ""
     @Published private(set) var awsProfiles: [String] = []
     @Published private(set) var appLanguageMode: AppLanguageMode = L10n.languageMode
+    @Published private(set) var appAppearanceMode: AppAppearanceMode = AppAppearance.mode
     @Published private(set) var externalTools: [ExternalTool] = []
     @Published var isExternalToolsSettingsPresented = false
 
@@ -491,6 +492,28 @@ final class FileBrowserViewModel: ObservableObject {
         reload()
     }
 
+    func openExternalDestination(_ url: URL) {
+        if SFTPClient.isSFTPURL(url) || S3Client.isS3URL(url) {
+            navigate(to: url)
+            return
+        }
+
+        let targetURL = url.standardizedFileURL
+        var isDirectory: ObjCBool = false
+
+        guard fileManager.fileExists(atPath: targetURL.path, isDirectory: &isDirectory) else {
+            presentMessage("Path does not exist: \(targetURL.path)")
+            return
+        }
+
+        if isDirectory.boolValue {
+            navigate(to: targetURL)
+        } else {
+            navigate(to: targetURL.deletingLastPathComponent())
+            NSWorkspace.shared.open(targetURL)
+        }
+    }
+
     private func navigateToSFTP(_ url: URL, recordHistory: Bool) {
         currentURL = url
         addressText = displayString(for: url)
@@ -660,7 +683,7 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     func dragProvider(for item: FileItem) -> NSItemProvider {
-        select(item)
+        let draggedURLs = draggedURLs(for: item)
 
         let provider: NSItemProvider
         let itemURLString = item.url.absoluteString
@@ -702,6 +725,7 @@ final class FileBrowserViewModel: ObservableObject {
         }
 
         provider.suggestedName = item.displayName
+        registerDraggedURLList(draggedURLs, on: provider)
 
         guard !isRemoteURL(item.url) else {
             return provider
@@ -726,6 +750,91 @@ final class FileBrowserViewModel: ObservableObject {
         return provider
     }
 
+    func draggedURLsForDraggingSession(for item: FileItem) -> [URL] {
+        draggedURLs(for: item)
+    }
+
+    func pasteboardWriter(forDraggedURL url: URL) -> NSPasteboardWriting {
+        guard isRemoteURL(url) else {
+            return url as NSURL
+        }
+
+        let pasteboardItem = NSPasteboardItem()
+        let urlString = url.absoluteString
+
+        if SFTPClient.isSFTPURL(url) {
+            pasteboardItem.setString(urlString, forType: NSPasteboard.PasteboardType(MihakoTransferType.sftpURL))
+        } else if S3Client.isS3URL(url) {
+            pasteboardItem.setString(urlString, forType: NSPasteboard.PasteboardType(MihakoTransferType.s3URL))
+        }
+
+        pasteboardItem.setString(urlString, forType: .URL)
+        pasteboardItem.setString(urlString, forType: .string)
+        return pasteboardItem
+    }
+
+    func dragImage(forDraggedURL url: URL) -> NSImage {
+        if isRemoteURL(url) {
+            let image = NSImage(systemSymbolName: S3Client.isS3URL(url) ? "shippingbox" : "terminal", accessibilityDescription: nil)
+                ?? NSImage(size: NSSize(width: 32, height: 32))
+            image.size = NSSize(width: 32, height: 32)
+            return image
+        }
+
+        let image = NSWorkspace.shared.icon(forFile: url.path)
+        image.size = NSSize(width: 32, height: 32)
+        return image
+    }
+
+    private func draggedURLs(for item: FileItem) -> [URL] {
+        if selectedIDs.contains(item.url) {
+            let selectedURLsInDisplayOrder = items
+                .filter { selectedIDs.contains($0.url) }
+                .map(\.url)
+
+            if !selectedURLsInDisplayOrder.isEmpty {
+                return selectedURLsInDisplayOrder
+            }
+        }
+
+        selectOnly(item.url)
+        return [item.url]
+    }
+
+    private func registerDraggedURLList(_ urls: [URL], on provider: NSItemProvider) {
+        guard !urls.isEmpty else {
+            return
+        }
+
+        let urlListData = urls
+            .map(\.absoluteString)
+            .joined(separator: "\n")
+            .data(using: .utf8)
+
+        provider.registerDataRepresentation(
+            forTypeIdentifier: MihakoTransferType.fileURLs,
+            visibility: .all
+        ) { completion in
+            completion(urlListData, nil)
+            return nil
+        }
+
+        let localURLs = urls.filter { !self.isRemoteURL($0) }
+
+        guard !localURLs.isEmpty,
+              let filenamesData = Self.filenamesPasteboardData(for: localURLs) else {
+            return
+        }
+
+        provider.registerDataRepresentation(
+            forTypeIdentifier: MihakoTransferType.filenamesPasteboard,
+            visibility: .all
+        ) { completion in
+            completion(filenamesData, nil)
+            return nil
+        }
+    }
+
     func dropItems(from providers: [NSItemProvider], into destinationFolder: URL) -> Bool {
         var acceptedDrop = false
 
@@ -748,6 +857,29 @@ final class FileBrowserViewModel: ObservableObject {
         typeIdentifier: String,
         into destinationFolder: URL
     ) {
+        if typeIdentifier == MihakoTransferType.fileURLs || typeIdentifier == MihakoTransferType.filenamesPasteboard {
+            provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { [weak self] data, error in
+                let droppedURLs: [URL]
+
+                if typeIdentifier == MihakoTransferType.filenamesPasteboard {
+                    droppedURLs = data.flatMap(Self.urlsFromFilenamesPasteboardData) ?? []
+                } else {
+                    droppedURLs = data
+                        .flatMap { String(data: $0, encoding: .utf8) }
+                        .map(Self.urlsFromDroppedURLList) ?? []
+                }
+
+                Task { @MainActor in
+                    self?.dropURLs(
+                        droppedURLs,
+                        errorMessage: droppedURLs.isEmpty ? error?.localizedDescription : nil,
+                        into: destinationFolder
+                    )
+                }
+            }
+            return
+        }
+
         guard typeIdentifier == UTType.fileURL.identifier else {
             provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { [weak self] data, error in
                 let droppedURL = data
@@ -1683,6 +1815,16 @@ final class FileBrowserViewModel: ObservableObject {
         L10n.setLanguageMode(mode)
         appLanguageMode = mode
         refreshSidebarLocations()
+        AppMenuLocalizer.apply()
+
+        DispatchQueue.main.async {
+            AppMenuLocalizer.apply()
+        }
+    }
+
+    func setAppAppearanceMode(_ mode: AppAppearanceMode) {
+        AppAppearance.setMode(mode)
+        appAppearanceMode = mode
     }
 
     private static func makeSidebarSections(
@@ -2891,6 +3033,20 @@ final class FileBrowserViewModel: ObservableObject {
         transfer([url], into: destinationFolder, mode: .copy)
     }
 
+    private func dropURLs(_ urls: [URL], errorMessage: String?, into destinationFolder: URL) {
+        if let errorMessage {
+            presentMessage("Drop failed: \(errorMessage)")
+            return
+        }
+
+        guard !urls.isEmpty else {
+            presentMessage("Drop failed: unsupported dropped item.")
+            return
+        }
+
+        transfer(urls, into: destinationFolder, mode: .copy)
+    }
+
     private func saveUserFavoriteFolders() {
         let paths = userFavoriteFolders.map { $0.standardizedFileURL.path }
         UserDefaults.standard.set(paths, forKey: userFavoritesDefaultsKey)
@@ -2990,6 +3146,36 @@ final class FileBrowserViewModel: ObservableObject {
         }
 
         return URL(fileURLWithPath: trimmedValue)
+    }
+
+    private nonisolated static func urlsFromDroppedURLList(_ value: String) -> [URL] {
+        value
+            .split(whereSeparator: \.isNewline)
+            .compactMap { url(fromDroppedString: String($0)) }
+    }
+
+    private nonisolated static func filenamesPasteboardData(for urls: [URL]) -> Data? {
+        try? PropertyListSerialization.data(
+            fromPropertyList: urls.map(\.path),
+            format: .binary,
+            options: 0
+        )
+    }
+
+    private nonisolated static func urlsFromFilenamesPasteboardData(_ data: Data) -> [URL] {
+        guard let propertyList = try? PropertyListSerialization.propertyList(
+            from: data,
+            options: [],
+            format: nil
+        ) else {
+            return []
+        }
+
+        if let paths = propertyList as? [String] {
+            return paths.map { URL(fileURLWithPath: $0) }
+        }
+
+        return []
     }
 
     private func openDirectory(_ url: URL, in terminalApp: TerminalApp) {
