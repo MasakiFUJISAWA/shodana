@@ -341,6 +341,13 @@
 "Choose Folder" = "フォルダを選択";
 "Choose Left Folder" = "左フォルダを選択";
 "Choose Right Folder" = "右フォルダを選択";
+"Select from Shodana Locations" = "Shodana の場所から選択";
+"Current Panes" = "現在のペイン";
+"Left Pane" = "左ペイン";
+"Right Pane" = "右ペイン";
+"Double-click to compare files" = "ダブルクリックでファイルを比較";
+"File Compare" = "ファイル比較";
+"Missing" = "存在しません";
 "Use SHA-256 for local files" = "ローカルファイルは SHA-256 を使う";
 "Respect ignore rules" = "除外ルールを使う";
 "Compare" = "比較";

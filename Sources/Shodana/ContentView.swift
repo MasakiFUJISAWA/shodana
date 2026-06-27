@@ -97,7 +97,8 @@ struct ContentView: View {
             FolderCompareSyncSheet(
                 leftInitialURL: browser.currentURL,
                 rightInitialURL: isDualPaneEnabled ? secondaryBrowser.currentURL : browser.currentURL,
-                showHiddenFiles: browser.showHiddenFiles
+                showHiddenFiles: browser.showHiddenFiles,
+                locationChoices: folderCompareLocationChoices()
             )
         }
     }
@@ -183,6 +184,59 @@ struct ContentView: View {
         if isDualPaneEnabled {
             secondaryBrowser.navigate(to: browser.currentURL)
         }
+    }
+
+    private func folderCompareLocationChoices() -> [FolderCompareLocationChoice] {
+        var choices: [FolderCompareLocationChoice] = []
+        var seenIDs = Set<String>()
+
+        func appendChoice(sectionTitle: String, title: String, url: URL) {
+            let id = folderCompareLocationID(for: url)
+
+            guard seenIDs.insert(id).inserted else {
+                return
+            }
+
+            choices.append(
+                FolderCompareLocationChoice(
+                    sectionTitle: sectionTitle,
+                    title: title,
+                    url: url
+                )
+            )
+        }
+
+        appendChoice(
+            sectionTitle: "Current Panes",
+            title: "Left Pane",
+            url: browser.currentURL
+        )
+
+        appendChoice(
+            sectionTitle: "Current Panes",
+            title: "Right Pane",
+            url: isDualPaneEnabled ? secondaryBrowser.currentURL : browser.currentURL
+        )
+
+        for section in browser.sidebarSections {
+            for location in section.locations where !location.isUnavailable {
+                appendChoice(
+                    sectionTitle: section.title,
+                    title: location.title,
+                    url: location.url
+                )
+            }
+        }
+
+        return choices
+    }
+
+    private func folderCompareLocationID(for url: URL) -> String {
+        if url.isFileURL {
+            return url.standardizedFileURL.path
+        }
+
+        return url.absoluteString
     }
 
     private func installPasteboardShortcutMonitor() {

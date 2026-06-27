@@ -341,6 +341,13 @@
 "Choose Folder" = "Choose Folder";
 "Choose Left Folder" = "Choose Left Folder";
 "Choose Right Folder" = "Choose Right Folder";
+"Select from Shodana Locations" = "Select from Shodana Locations";
+"Current Panes" = "Current Panes";
+"Left Pane" = "Left Pane";
+"Right Pane" = "Right Pane";
+"Double-click to compare files" = "Double-click to compare files";
+"File Compare" = "File Compare";
+"Missing" = "Missing";
 "Use SHA-256 for local files" = "Use SHA-256 for local files";
 "Respect ignore rules" = "Respect ignore rules";
 "Compare" = "Compare";

@@ -161,6 +161,11 @@ struct FolderCompareEntry: Identifiable, Hashable {
     var displayPath: String {
         relativePath.isEmpty ? "." : relativePath
     }
+
+    var canShowDetail: Bool {
+        let candidates = [left, right].compactMap { $0 }
+        return !candidates.isEmpty && candidates.allSatisfy { !$0.isDirectory }
+    }
 }
 
 struct FolderSyncPlanItem: Identifiable, Hashable {
@@ -1178,11 +1183,33 @@ private struct IgnoreMatcher {
     }
 }
 
+struct FolderCompareLocationChoice: Identifiable, Hashable {
+    var id: String {
+        if url.isFileURL {
+            return "\(sectionTitle)-\(url.standardizedFileURL.path)"
+        }
+
+        return "\(sectionTitle)-\(url.absoluteString)"
+    }
+
+    let sectionTitle: String
+    let title: String
+    let url: URL
+}
+
 struct FolderCompareSyncSheet: View {
     @StateObject private var viewModel: FolderCompareSyncViewModel
     @Environment(\.dismiss) private var dismiss
+    private let locationChoices: [FolderCompareLocationChoice]
+    @State private var selectedDetailEntry: FolderCompareEntry?
 
-    init(leftInitialURL: URL, rightInitialURL: URL, showHiddenFiles: Bool) {
+    init(
+        leftInitialURL: URL,
+        rightInitialURL: URL,
+        showHiddenFiles: Bool,
+        locationChoices: [FolderCompareLocationChoice] = []
+    ) {
+        self.locationChoices = locationChoices
         _viewModel = StateObject(
             wrappedValue: FolderCompareSyncViewModel(
                 leftInitialURL: leftInitialURL,
@@ -1209,6 +1236,9 @@ struct FolderCompareSyncSheet: View {
             syncControls
         }
         .frame(minWidth: 980, minHeight: 680)
+        .sheet(item: $selectedDetailEntry) { entry in
+            FolderCompareDetailSheet(entry: entry)
+        }
         .alert(
             L10n.string("Action Failed"),
             isPresented: Binding(
@@ -1254,8 +1284,12 @@ struct FolderCompareSyncSheet: View {
                         TextField(L10n.string("Left Folder"), text: $viewModel.leftText)
                             .textFieldStyle(.roundedBorder)
 
+                        locationMenu { url in
+                            viewModel.leftText = displayString(for: url)
+                        }
+
                         Button {
-                            chooseFolder(title: "Choose Left Folder") { url in
+                            chooseFolder(title: "Choose Left Folder", currentText: viewModel.leftText) { url in
                                 viewModel.leftText = url.path
                             }
                         } label: {
@@ -1273,8 +1307,12 @@ struct FolderCompareSyncSheet: View {
                         TextField(L10n.string("Right Folder"), text: $viewModel.rightText)
                             .textFieldStyle(.roundedBorder)
 
+                        locationMenu { url in
+                            viewModel.rightText = displayString(for: url)
+                        }
+
                         Button {
-                            chooseFolder(title: "Choose Right Folder") { url in
+                            chooseFolder(title: "Choose Right Folder", currentText: viewModel.rightText) { url in
                                 viewModel.rightText = url.path
                             }
                         } label: {
@@ -1308,17 +1346,83 @@ struct FolderCompareSyncSheet: View {
         .padding(14)
     }
 
-    private func chooseFolder(title: String, completion: @escaping (URL) -> Void) {
+    @ViewBuilder
+    private func locationMenu(selection: @escaping (URL) -> Void) -> some View {
+        Menu {
+            ForEach(groupedLocationChoices, id: \.sectionTitle) { group in
+                Section(L10n.string(group.sectionTitle)) {
+                    ForEach(group.choices) { choice in
+                        Button(choice.title) {
+                            selection(choice.url)
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "sidebar.left")
+        }
+        .menuStyle(.button)
+        .help(L10n.string("Select from Shodana Locations"))
+    }
+
+    private var groupedLocationChoices: [(sectionTitle: String, choices: [FolderCompareLocationChoice])] {
+        var groups: [(sectionTitle: String, choices: [FolderCompareLocationChoice])] = []
+
+        for choice in locationChoices {
+            if let index = groups.firstIndex(where: { $0.sectionTitle == choice.sectionTitle }) {
+                groups[index].choices.append(choice)
+            } else {
+                groups.append((sectionTitle: choice.sectionTitle, choices: [choice]))
+            }
+        }
+
+        return groups
+    }
+
+    private func chooseFolder(title: String, currentText: String, completion: @escaping (URL) -> Void) {
         let panel = NSOpenPanel()
         panel.title = L10n.string(title)
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
+        panel.directoryURL = localDirectoryURL(from: currentText)
 
         if panel.runModal() == .OK, let url = panel.url {
             completion(url)
         }
+    }
+
+    private func localDirectoryURL(from text: String) -> URL? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmed.isEmpty,
+              !trimmed.lowercased().hasPrefix("sftp://"),
+              !trimmed.lowercased().hasPrefix("s3://") else {
+            return nil
+        }
+
+        let url = URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath)
+            .standardizedFileURL
+        var isDirectory: ObjCBool = false
+
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) {
+            return isDirectory.boolValue ? url : url.deletingLastPathComponent()
+        }
+
+        return url.deletingLastPathComponent()
+    }
+
+    private func displayString(for url: URL) -> String {
+        if SFTPClient.isSFTPURL(url) {
+            return SFTPClient.displayString(for: url)
+        }
+
+        if S3Client.isS3URL(url) {
+            return S3Client.displayString(for: url)
+        }
+
+        return url.path
     }
 
     private var resultArea: some View {
@@ -1350,7 +1454,13 @@ struct FolderCompareSyncSheet: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(viewModel.filteredEntries) { entry in
-                            FolderCompareResultRow(entry: entry)
+                            FolderCompareResultRow(entry: entry) {
+                                guard entry.canShowDetail else {
+                                    return
+                                }
+
+                                selectedDetailEntry = entry
+                            }
                         }
                     }
                 }
@@ -1447,6 +1557,7 @@ private struct FolderCompareHeaderRow: View {
 
 private struct FolderCompareResultRow: View {
     let entry: FolderCompareEntry
+    let onOpenDetail: () -> Void
 
     var body: some View {
         HStack(spacing: 0) {
@@ -1485,6 +1596,11 @@ private struct FolderCompareResultRow: View {
         .padding(.horizontal, 14)
         .frame(height: 28)
         .background(entry.status == .same ? Color.clear : entry.status.color.opacity(0.12))
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            onOpenDetail()
+        }
+        .help(entry.canShowDetail ? L10n.string("Double-click to compare files") : "")
     }
 
     private func sizeText(_ entry: FolderSnapshotEntry?) -> String {
@@ -1503,6 +1619,231 @@ private struct FolderCompareResultRow: View {
         }
 
         return date.formatted(date: .numeric, time: .shortened)
+    }
+}
+
+private struct FolderCompareDetailSheet: View {
+    let entry: FolderCompareEntry
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var leftContent: FolderComparePreviewContent = .loading
+    @State private var rightContent: FolderComparePreviewContent = .loading
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n.string("File Compare"))
+                        .font(.headline)
+
+                    Text(entry.displayPath)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer()
+
+                Button(L10n.string("Close")) {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+            .padding(14)
+
+            Divider()
+
+            HStack(spacing: 0) {
+                FolderComparePreviewPane(
+                    title: "Left",
+                    snapshot: entry.left,
+                    content: leftContent
+                )
+
+                Divider()
+
+                FolderComparePreviewPane(
+                    title: "Right",
+                    snapshot: entry.right,
+                    content: rightContent
+                )
+            }
+        }
+        .frame(minWidth: 980, minHeight: 620)
+        .task(id: entry.id) {
+            await load()
+        }
+    }
+
+    private func load() async {
+        async let left = loadContent(for: entry.left)
+        async let right = loadContent(for: entry.right)
+        let values = await (left, right)
+
+        await MainActor.run {
+            leftContent = values.0
+            rightContent = values.1
+        }
+    }
+
+    private func loadContent(for snapshot: FolderSnapshotEntry?) async -> FolderComparePreviewContent {
+        guard let snapshot else {
+            return .missing
+        }
+
+        do {
+            let localURL = try await localPreviewURL(for: snapshot)
+
+            if isImage(localURL) {
+                if let image = NSImage(contentsOf: localURL) {
+                    return .image(image)
+                }
+            }
+
+            if isLikelyText(localURL),
+               let text = try? String(contentsOf: localURL, encoding: .utf8) {
+                return .text(text)
+            }
+
+            return .metadata(
+                [
+                    "\(L10n.string("Path")): \(snapshot.url.absoluteString)",
+                    "\(L10n.string("Size")): \(snapshot.size?.formatted(.byteCount(style: .file)) ?? "-")",
+                    "\(L10n.string("Modified")): \(snapshot.modifiedAt?.formatted(date: .numeric, time: .standard) ?? "-")"
+                ]
+                .joined(separator: "\n")
+            )
+        } catch {
+            return .error(error.localizedDescription)
+        }
+    }
+
+    private func localPreviewURL(for snapshot: FolderSnapshotEntry) async throws -> URL {
+        if snapshot.url.isFileURL {
+            return snapshot.url
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ShodanaComparePreview", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+
+        if SFTPClient.isSFTPURL(snapshot.url) {
+            try await SFTPClient.download(remoteURLs: [snapshot.url], to: tempDirectory)
+        } else if S3Client.isS3URL(snapshot.url) {
+            try await S3Client.download(remoteURLs: [snapshot.url], to: tempDirectory)
+        }
+
+        return tempDirectory.appendingPathComponent(snapshot.url.lastPathComponent)
+    }
+
+    private func isImage(_ url: URL) -> Bool {
+        ["jpg", "jpeg", "png", "gif", "heic", "tiff", "webp"].contains(url.pathExtension.lowercased())
+    }
+
+    private func isLikelyText(_ url: URL) -> Bool {
+        let textExtensions = [
+            "txt", "md", "markdown", "swift", "json", "yaml", "yml", "xml", "html", "css",
+            "js", "ts", "tsx", "jsx", "py", "rb", "go", "rs", "java", "c", "h", "cpp",
+            "hpp", "sh", "zsh", "sql", "toml", "ini", "plist", "csv"
+        ]
+
+        if textExtensions.contains(url.pathExtension.lowercased()) {
+            return true
+        }
+
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            return false
+        }
+        defer {
+            try? handle.close()
+        }
+
+        let data = (try? handle.read(upToCount: 4096)) ?? Data()
+        return !data.contains(0)
+    }
+}
+
+private enum FolderComparePreviewContent {
+    case loading
+    case missing
+    case text(String)
+    case image(NSImage)
+    case metadata(String)
+    case error(String)
+}
+
+private struct FolderComparePreviewPane: View {
+    let title: String
+    let snapshot: FolderSnapshotEntry?
+    let content: FolderComparePreviewContent
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(L10n.string(title))
+                    .font(.subheadline.weight(.semibold))
+
+                Spacer()
+
+                Text(snapshot?.url.absoluteString.removingPercentEncoding ?? "-")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+
+            Divider()
+
+            contentView
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private var contentView: some View {
+        switch content {
+        case .loading:
+            ProgressView()
+                .controlSize(.small)
+        case .missing:
+            Text(L10n.string("Missing"))
+                .foregroundStyle(.secondary)
+        case .text(let text):
+            ScrollView([.vertical, .horizontal]) {
+                Text(text)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(12)
+            }
+            .background(Color(nsColor: .textBackgroundColor))
+        case .image(let image):
+            ScrollView([.vertical, .horizontal]) {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .padding(12)
+            }
+            .background(Color(nsColor: .textBackgroundColor))
+        case .metadata(let text):
+            ScrollView {
+                Text(text)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(12)
+            }
+            .background(Color(nsColor: .textBackgroundColor))
+        case .error(let message):
+            Text(message)
+                .foregroundStyle(.red)
+                .textSelection(.enabled)
+                .padding(12)
+        }
     }
 }
 
