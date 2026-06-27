@@ -338,6 +338,9 @@
 "Right" = "右";
 "Left Folder" = "左フォルダ";
 "Right Folder" = "右フォルダ";
+"Choose Folder" = "フォルダを選択";
+"Choose Left Folder" = "左フォルダを選択";
+"Choose Right Folder" = "右フォルダを選択";
 "Use SHA-256 for local files" = "ローカルファイルは SHA-256 を使う";
 "Respect ignore rules" = "除外ルールを使う";
 "Compare" = "比較";

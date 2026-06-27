@@ -1,3 +1,4 @@
+import AppKit
 import CryptoKit
 import Foundation
 import SwiftUI
@@ -1249,16 +1250,38 @@ struct FolderCompareSyncSheet: View {
                     Text(L10n.string("Left"))
                         .foregroundStyle(.secondary)
 
-                    TextField(L10n.string("Left Folder"), text: $viewModel.leftText)
-                        .textFieldStyle(.roundedBorder)
+                    HStack(spacing: 8) {
+                        TextField(L10n.string("Left Folder"), text: $viewModel.leftText)
+                            .textFieldStyle(.roundedBorder)
+
+                        Button {
+                            chooseFolder(title: "Choose Left Folder") { url in
+                                viewModel.leftText = url.path
+                            }
+                        } label: {
+                            Image(systemName: "folder")
+                        }
+                        .help(L10n.string("Choose Folder"))
+                    }
                 }
 
                 GridRow {
                     Text(L10n.string("Right"))
                         .foregroundStyle(.secondary)
 
-                    TextField(L10n.string("Right Folder"), text: $viewModel.rightText)
-                        .textFieldStyle(.roundedBorder)
+                    HStack(spacing: 8) {
+                        TextField(L10n.string("Right Folder"), text: $viewModel.rightText)
+                            .textFieldStyle(.roundedBorder)
+
+                        Button {
+                            chooseFolder(title: "Choose Right Folder") { url in
+                                viewModel.rightText = url.path
+                            }
+                        } label: {
+                            Image(systemName: "folder")
+                        }
+                        .help(L10n.string("Choose Folder"))
+                    }
                 }
             }
 
@@ -1283,6 +1306,19 @@ struct FolderCompareSyncSheet: View {
             }
         }
         .padding(14)
+    }
+
+    private func chooseFolder(title: String, completion: @escaping (URL) -> Void) {
+        let panel = NSOpenPanel()
+        panel.title = L10n.string(title)
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+
+        if panel.runModal() == .OK, let url = panel.url {
+            completion(url)
+        }
     }
 
     private var resultArea: some View {
