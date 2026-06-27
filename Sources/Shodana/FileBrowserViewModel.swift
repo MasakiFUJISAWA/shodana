@@ -17,6 +17,7 @@ final class FileBrowserViewModel: ObservableObject {
     }
     @Published private(set) var sortColumn: FileSortColumn = .name
     @Published private(set) var sortAscending = true
+    @Published private(set) var alertTitle = L10n.string("Notice")
     @Published var errorMessage: String?
     @Published var renameRequest: RenameRequest?
     @Published var gitCommitRequest: GitCommitRequest?
@@ -2129,7 +2130,10 @@ final class FileBrowserViewModel: ObservableObject {
                 )
                 gitCommitRequest = nil
                 reload()
-                presentMessage(output.nilIfEmpty ?? L10n.string("Git commit completed."))
+                presentMessage(
+                    output.nilIfEmpty ?? L10n.string("Git commit completed."),
+                    title: L10n.string("Action Complete")
+                )
             } catch {
                 presentError(error, action: "Git Commit")
             }
@@ -2192,7 +2196,10 @@ final class FileBrowserViewModel: ObservableObject {
             do {
                 let output = try await GitClient.add(paths: paths, in: repositoryURL)
                 reload()
-                presentMessage(output.nilIfEmpty ?? L10n.string("Git add completed."))
+                presentMessage(
+                    output.nilIfEmpty ?? L10n.string("Git add completed."),
+                    title: L10n.string("Action Complete")
+                )
             } catch {
                 presentError(error, action: "Git Add")
             }
@@ -2263,7 +2270,10 @@ final class FileBrowserViewModel: ObservableObject {
             do {
                 let output = try await operation(repositoryURL)
                 reload()
-                presentMessage(output.nilIfEmpty ?? L10n.string(successMessage))
+                presentMessage(
+                    output.nilIfEmpty ?? L10n.string(successMessage),
+                    title: L10n.string("Action Complete")
+                )
             } catch {
                 presentError(error, action: action)
             }
@@ -2800,6 +2810,7 @@ final class FileBrowserViewModel: ObservableObject {
 
     func clearError() {
         errorMessage = nil
+        alertTitle = L10n.string("Notice")
     }
 
     func setAppLanguageMode(_ mode: AppLanguageMode) {
@@ -4504,10 +4515,12 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     private func presentError(_ error: Error, action: String) {
+        alertTitle = L10n.string("Action Failed")
         errorMessage = L10n.format("error.action_failed", L10n.string(action), error.localizedDescription)
     }
 
-    private func presentMessage(_ message: String) {
+    private func presentMessage(_ message: String, title: String = L10n.string("Notice")) {
+        alertTitle = title
         errorMessage = message
     }
 }

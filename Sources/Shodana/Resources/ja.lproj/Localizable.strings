@@ -1,4 +1,6 @@
 "Action Failed" = "操作に失敗しました";
+"Action Complete" = "完了";
+"Notice" = "通知";
 "OK" = "OK";
 "Resize sidebar" = "サイドバー幅を変更";
 "Favorites" = "よく使う項目";
@@ -218,6 +220,7 @@
 "Open SFTP item" = "SFTP 項目を開く";
 "Open S3 item" = "S3 項目を開く";
 "Git" = "Git";
+"Git actions" = "Git 操作";
 "Git Pull" = "Git Pull";
 "Git Push" = "Git Push";
 "Git Add" = "Git Add";

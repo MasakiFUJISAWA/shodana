@@ -115,7 +115,7 @@ struct ContentView: View {
             )
         }
         .alert(
-            L10n.string("Action Failed"),
+            browser.alertTitle,
             isPresented: Binding(
                 get: { browser.errorMessage != nil },
                 set: { isPresented in
@@ -2724,23 +2724,29 @@ struct GitBranchStatusLabel: View {
     let branchName: String
 
     var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "point.3.connected.trianglepath.dotted")
-                .foregroundStyle(.secondary)
+        Menu {
+            GitRepositoryMenuItems()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                    .foregroundStyle(.secondary)
 
-            Text(branchName)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .foregroundStyle(.secondary)
+                Text(branchName)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(.secondary)
 
-            if let indicator = browser.gitBranchTrackingIndicator {
-                Text(indicator)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(indicatorColor)
-                    .help(browser.gitBranchTrackingDescription ?? "")
+                if let indicator = browser.gitBranchTrackingIndicator {
+                    Text(indicator)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(indicatorColor)
+                        .help(browser.gitBranchTrackingDescription ?? "")
+                }
             }
         }
         .frame(maxWidth: 210, alignment: .leading)
+        .buttonStyle(.plain)
+        .help(L10n.string("Git actions"))
     }
 
     private var indicatorColor: Color {
@@ -2761,6 +2767,30 @@ struct GitBranchStatusLabel: View {
         }
 
         return Color.accentColor
+    }
+}
+
+struct GitRepositoryMenuItems: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    var body: some View {
+        Button(L10n.string("Git Pull")) {
+            browser.gitPull()
+        }
+
+        Button(L10n.string("Git Push")) {
+            browser.gitPush()
+        }
+
+        Divider()
+
+        Button(L10n.string("Checkout Branch...")) {
+            browser.beginGitCheckoutBranch()
+        }
+
+        Button(L10n.string("Merge Branch...")) {
+            browser.beginGitMergeBranch()
+        }
     }
 }
 

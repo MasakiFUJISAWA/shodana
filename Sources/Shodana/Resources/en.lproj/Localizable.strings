@@ -1,4 +1,6 @@
 "Action Failed" = "Action Failed";
+"Action Complete" = "Action Complete";
+"Notice" = "Notice";
 "OK" = "OK";
 "Resize sidebar" = "Resize sidebar";
 "Favorites" = "Favorites";
@@ -218,6 +220,7 @@
 "Open SFTP item" = "Open SFTP item";
 "Open S3 item" = "Open S3 item";
 "Git" = "Git";
+"Git actions" = "Git actions";
 "Git Pull" = "Git Pull";
 "Git Push" = "Git Push";
 "Git Add" = "Git Add";
