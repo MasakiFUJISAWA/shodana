@@ -21,6 +21,8 @@
 "Search below path" = "パス配下を検索";
 "Search Results" = "検索結果";
 "Searching..." = "検索中...";
+"Search Cancelled" = "検索を中断しました";
+"Stop Search" = "検索を停止";
 "Enter a search term" = "検索語を入力してください";
 "No Results" = "該当する項目はありません";
 "Path" = "パス";
@@ -90,6 +92,7 @@
 "File" = "ファイル";
 "Symbolic Link" = "シンボリックリンク";
 "Open" = "開く";
+"Get Info" = "情報を見る";
 "Show Package Contents" = "パッケージの内容を表示";
 "Reconnect" = "再接続";
 "Rename" = "名前変更";
@@ -221,6 +224,11 @@
 "Open S3 item" = "S3 項目を開く";
 "Git" = "Git";
 "Git actions" = "Git 操作";
+"Git Result" = "Git 実行結果";
+"Action" = "操作";
+"Summary" = "概要";
+"Details" = "詳細";
+"Copy Details" = "詳細をコピー";
 "Git Pull" = "Git Pull";
 "Git Push" = "Git Push";
 "Git Add" = "Git Add";
@@ -252,3 +260,11 @@
 "git.tracking.ahead" = "未プッシュのコミットが%d件あります。";
 "git.tracking.behind" = "リモート側の未取得コミットが%d件あります。";
 "git.tracking.ahead_behind" = "未プッシュのコミットが%d件、リモート側の未取得コミットが%d件あります。";
+"Close" = "閉じる";
+"Location" = "場所";
+"Multiple Locations" = "複数の場所";
+"Calculating Size Unavailable" = "サイズを取得できません";
+"Unknown" = "不明";
+"Items" = "項目";
+"Total Size" = "合計サイズ";
+"Multiple Items" = "複数項目";

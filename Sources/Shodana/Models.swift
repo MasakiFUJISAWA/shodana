@@ -131,6 +131,11 @@ struct RenameRequest: Identifiable {
     let currentName: String
 }
 
+struct FileInfoRequest: Identifiable {
+    let id = UUID()
+    let items: [FileItem]
+}
+
 enum GitBranchAction: String, Identifiable {
     case checkout
     case merge
@@ -149,6 +154,13 @@ struct GitBranchRequest: Identifiable {
     let repositoryURL: URL
     let action: GitBranchAction
     let branches: [String]
+}
+
+struct GitOperationResult: Identifiable {
+    let id = UUID()
+    let actionTitle: String
+    let summary: String
+    let detail: String
 }
 
 enum ShodanaTransferType {

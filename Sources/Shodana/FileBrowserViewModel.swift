@@ -20,8 +20,10 @@ final class FileBrowserViewModel: ObservableObject {
     @Published private(set) var alertTitle = L10n.string("Notice")
     @Published var errorMessage: String?
     @Published var renameRequest: RenameRequest?
+    @Published var fileInfoRequest: FileInfoRequest?
     @Published var gitCommitRequest: GitCommitRequest?
     @Published var gitBranchRequest: GitBranchRequest?
+    @Published var gitOperationResult: GitOperationResult?
     @Published private(set) var gitRepositoryInfo: GitRepositoryInfo?
     @Published private(set) var pendingClipboardOperation: FileClipboardOperation?
     @Published private(set) var sidebarSections: [SidebarSection] = []
@@ -34,12 +36,21 @@ final class FileBrowserViewModel: ObservableObject {
 
             selectedIDs.removeAll()
             selectionAnchorURL = nil
+            selectionFocusURL = nil
+
+            if contentMode != .search {
+                searchTask?.cancel()
+                searchTask = nil
+                isSearching = false
+                wasSearchCancelled = false
+            }
         }
     }
     @Published var searchText = ""
     @Published private(set) var searchResults: [FileItem] = []
     @Published private(set) var isSearching = false
     @Published private(set) var hasPerformedSearch = false
+    @Published private(set) var wasSearchCancelled = false
     @Published private(set) var userFavoriteFolders: [URL] = []
     @Published private(set) var serverConnections: [ServerConnection] = []
     @Published var isConnectServerDialogPresented = false
@@ -72,6 +83,7 @@ final class FileBrowserViewModel: ObservableObject {
     private var history: [URL]
     private var historyIndex = 0
     private var selectionAnchorURL: URL?
+    private var selectionFocusURL: URL?
     private var reconnectingServerIDs: Set<String> = []
     private var sidebarLocationOrderIDs: [String] = []
     private var remoteReloadTask: Task<Void, Never>?
@@ -122,6 +134,7 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     deinit {
+        searchTask?.cancel()
         gitRepositoryInfoTask?.cancel()
         gitRemoteTrackingTask?.cancel()
     }
@@ -390,10 +403,15 @@ final class FileBrowserViewModel: ObservableObject {
             if let selectionAnchorURL, !items.contains(where: { $0.url == selectionAnchorURL }) {
                 self.selectionAnchorURL = firstSelectedURLInDisplayOrder()
             }
+
+            if let selectionFocusURL, !items.contains(where: { $0.url == selectionFocusURL }) {
+                self.selectionFocusURL = firstSelectedURLInDisplayOrder()
+            }
         } catch {
             items = []
             selectedIDs.removeAll()
             selectionAnchorURL = nil
+            selectionFocusURL = nil
             presentError(error, action: "Read folder")
         }
     }
@@ -488,6 +506,10 @@ final class FileBrowserViewModel: ObservableObject {
             return L10n.string("Enter a search term")
         }
 
+        if wasSearchCancelled {
+            return L10n.string("Search Cancelled")
+        }
+
         return L10n.string("No Results")
     }
 
@@ -495,8 +517,10 @@ final class FileBrowserViewModel: ObservableObject {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         contentMode = .search
         searchTask?.cancel()
+        wasSearchCancelled = false
         selectedIDs.removeAll()
         selectionAnchorURL = nil
+        selectionFocusURL = nil
 
         guard !query.isEmpty else {
             searchResults = []
@@ -588,6 +612,17 @@ final class FileBrowserViewModel: ObservableObject {
         }
     }
 
+    func cancelSearch() {
+        guard isSearching else {
+            return
+        }
+
+        searchTask?.cancel()
+        searchTask = nil
+        isSearching = false
+        wasSearchCancelled = true
+    }
+
     private func searchRootURLFromAddress() -> URL? {
         let rawPath = addressText.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -654,7 +689,9 @@ final class FileBrowserViewModel: ObservableObject {
         in rootURL: URL,
         showHiddenFiles: Bool
     ) async throws -> [FileItem] {
-        try await Task.detached(priority: .userInitiated) {
+        let worker = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+
             if let spotlightItems = try? searchLocalItemsWithSpotlight(
                 matching: query,
                 in: rootURL,
@@ -663,6 +700,8 @@ final class FileBrowserViewModel: ObservableObject {
                !spotlightItems.isEmpty {
                 return spotlightItems
             }
+
+            try Task.checkCancellation()
 
             let keys: [URLResourceKey] = [
                 .isDirectoryKey,
@@ -704,7 +743,13 @@ final class FileBrowserViewModel: ObservableObject {
             }
 
             return results
-        }.value
+        }
+
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
     private nonisolated static func searchLocalItemsWithSpotlight(
@@ -799,6 +844,11 @@ final class FileBrowserViewModel: ObservableObject {
                         self.selectionAnchorURL = self.firstSelectedURLInDisplayOrder()
                     }
 
+                    if let selectionFocusURL = self.selectionFocusURL,
+                       !self.items.contains(where: { $0.url == selectionFocusURL }) {
+                        self.selectionFocusURL = self.firstSelectedURLInDisplayOrder()
+                    }
+
                     if self.history.indices.contains(self.historyIndex),
                        self.history[self.historyIndex] == requestedURL {
                         self.history[self.historyIndex] = result.url
@@ -815,6 +865,7 @@ final class FileBrowserViewModel: ObservableObject {
                     self.items = []
                     self.selectedIDs.removeAll()
                     self.selectionAnchorURL = nil
+                    self.selectionFocusURL = nil
                     self.markServerConnectionUnavailable(requestedURL)
                     self.presentError(error, action: "Read SFTP folder")
                 }
@@ -852,6 +903,11 @@ final class FileBrowserViewModel: ObservableObject {
                         self.selectionAnchorURL = self.firstSelectedURLInDisplayOrder()
                     }
 
+                    if let selectionFocusURL = self.selectionFocusURL,
+                       !self.items.contains(where: { $0.url == selectionFocusURL }) {
+                        self.selectionFocusURL = self.firstSelectedURLInDisplayOrder()
+                    }
+
                     if self.history.indices.contains(self.historyIndex),
                        self.history[self.historyIndex] == requestedURL {
                         self.history[self.historyIndex] = result.url
@@ -868,6 +924,7 @@ final class FileBrowserViewModel: ObservableObject {
                     self.items = []
                     self.selectedIDs.removeAll()
                     self.selectionAnchorURL = nil
+                    self.selectionFocusURL = nil
                     self.markServerConnectionUnavailable(requestedURL)
                     self.presentError(error, action: "Read S3 folder")
                 }
@@ -968,6 +1025,7 @@ final class FileBrowserViewModel: ObservableObject {
         addressText = displayString(for: targetURL)
         selectedIDs.removeAll()
         selectionAnchorURL = nil
+        selectionFocusURL = nil
 
         if recordHistory {
             if historyIndex < history.count - 1 {
@@ -1044,6 +1102,7 @@ final class FileBrowserViewModel: ObservableObject {
         addressText = displayString(for: url)
         selectedIDs.removeAll()
         selectionAnchorURL = nil
+        selectionFocusURL = nil
 
         if recordHistory {
             if historyIndex < history.count - 1 {
@@ -1064,6 +1123,7 @@ final class FileBrowserViewModel: ObservableObject {
         addressText = displayString(for: url)
         selectedIDs.removeAll()
         selectionAnchorURL = nil
+        selectionFocusURL = nil
 
         if recordHistory {
             if historyIndex < history.count - 1 {
@@ -1165,6 +1225,7 @@ final class FileBrowserViewModel: ObservableObject {
     func selectOnly(_ url: URL) {
         selectedIDs = [url]
         selectionAnchorURL = url
+        selectionFocusURL = url
     }
 
     func select(_ url: URL) {
@@ -1178,20 +1239,69 @@ final class FileBrowserViewModel: ObservableObject {
                 if selectionAnchorURL == url {
                     selectionAnchorURL = firstSelectedURLInDisplayOrder()
                 }
+
+                if selectionFocusURL == url {
+                    selectionFocusURL = firstSelectedURLInDisplayOrder()
+                }
             } else {
                 selectedIDs.insert(url)
                 selectionAnchorURL = url
+                selectionFocusURL = url
             }
         } else if modifierFlags.contains(.shift) {
             selectRange(endingAt: url)
         } else {
             selectedIDs = [url]
             selectionAnchorURL = url
+            selectionFocusURL = url
         }
     }
 
     func activateFilePane() {
         NSApp.keyWindow?.makeFirstResponder(nil)
+    }
+
+    func extendSelectionByKeyboard(offset: Int) {
+        guard offset != 0, !displayedItems.isEmpty else {
+            return
+        }
+
+        activateFilePane()
+
+        let items = displayedItems
+        let focusedIndex = selectionFocusURL
+            .flatMap { focusedURL in
+                items.firstIndex { $0.url == focusedURL }
+            }
+            ?? keyboardSelectionFallbackIndex(for: offset, in: items)
+        let targetIndex: Int
+
+        if let focusedIndex {
+            targetIndex = min(max(focusedIndex + offset, 0), items.count - 1)
+        } else {
+            targetIndex = offset > 0 ? 0 : items.count - 1
+        }
+
+        let targetURL = items[targetIndex].url
+        let anchorURL = selectionAnchorURL
+            .flatMap { anchorURL in
+                items.contains { $0.url == anchorURL } ? anchorURL : nil
+            }
+            ?? focusedIndex.map { items[$0].url }
+            ?? targetURL
+
+        guard let anchorIndex = items.firstIndex(where: { $0.url == anchorURL }) else {
+            selectOnly(targetURL)
+            return
+        }
+
+        let bounds = anchorIndex <= targetIndex
+            ? anchorIndex...targetIndex
+            : targetIndex...anchorIndex
+
+        selectedIDs = Set(items[bounds].map(\.url))
+        selectionAnchorURL = anchorURL
+        selectionFocusURL = targetURL
     }
 
     private func selectRange(endingAt url: URL) {
@@ -1213,10 +1323,23 @@ final class FileBrowserViewModel: ObservableObject {
 
         selectedIDs = Set(selectableItems[bounds].map(\.url))
         selectionAnchorURL = anchorURL
+        selectionFocusURL = url
     }
 
     private func firstSelectedURLInDisplayOrder() -> URL? {
         displayedItems.first { selectedIDs.contains($0.url) }?.url
+    }
+
+    private func keyboardSelectionFallbackIndex(for offset: Int, in items: [FileItem]) -> Int? {
+        let selectedIndexes = items.indices.filter { index in
+            selectedIDs.contains(items[index].url)
+        }
+
+        guard !selectedIndexes.isEmpty else {
+            return nil
+        }
+
+        return offset > 0 ? selectedIndexes.max() : selectedIndexes.min()
     }
 
     func dragProvider(for item: FileItem) -> NSItemProvider {
@@ -1605,6 +1728,14 @@ final class FileBrowserViewModel: ObservableObject {
         renameRequest = nil
     }
 
+    func beginGetInfo(_ item: FileItem) {
+        fileInfoRequest = FileInfoRequest(items: contextualItems(for: item))
+    }
+
+    func cancelGetInfo() {
+        fileInfoRequest = nil
+    }
+
     func rename(url: URL, to proposedName: String) {
         let newName = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -1740,6 +1871,7 @@ final class FileBrowserViewModel: ObservableObject {
 
         selectedIDs = Set(displayedItems.map(\.url))
         selectionAnchorURL = firstSelectedURLInDisplayOrder()
+        selectionFocusURL = displayedItems.last?.url
     }
 
     func pasteIntoCurrentFolder() {
@@ -1785,6 +1917,7 @@ final class FileBrowserViewModel: ObservableObject {
             reload()
             selectedIDs = Set(pastedURLs)
             selectionAnchorURL = pastedURLs.first
+            selectionFocusURL = pastedURLs.last
         } catch {
             presentError(error, action: operation.mode == .cut ? "Move" : "Copy")
         }
@@ -1994,14 +2127,44 @@ final class FileBrowserViewModel: ObservableObject {
             baseName: baseName,
             fileExtension: format.fileExtension
         )
-        let sourceNames = urls.map(\.lastPathComponent)
 
         Task {
+            let stagingParentDirectory: URL?
+
             do {
+                let archiveSource: (names: [String], parentDirectory: URL)
+
+                if urls.count > 1 {
+                    let stagingParent = fileManager.temporaryDirectory
+                        .appendingPathComponent("ShodanaArchive", isDirectory: true)
+                        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+                    let stagingRoot = stagingParent.appendingPathComponent(baseName, isDirectory: true)
+                    try fileManager.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+
+                    for url in urls {
+                        try fileManager.copyItem(
+                            at: url,
+                            to: stagingRoot.appendingPathComponent(url.lastPathComponent)
+                        )
+                    }
+
+                    stagingParentDirectory = stagingParent
+                    archiveSource = ([stagingRoot.lastPathComponent], stagingParent)
+                } else {
+                    stagingParentDirectory = nil
+                    archiveSource = (urls.map(\.lastPathComponent), parentDirectory)
+                }
+
+                defer {
+                    if let stagingParentDirectory {
+                        try? fileManager.removeItem(at: stagingParentDirectory)
+                    }
+                }
+
                 try await ArchiveClient.createArchive(
                     format: format,
-                    sourceNames: sourceNames,
-                    parentDirectory: parentDirectory,
+                    sourceNames: archiveSource.names,
+                    parentDirectory: archiveSource.parentDirectory,
                     destinationURL: destinationURL
                 )
                 reload()
@@ -2035,11 +2198,20 @@ final class FileBrowserViewModel: ObservableObject {
                         pathExtension: "",
                         copyStyle: false
                     )
+                    let stagingDirectory = fileManager.temporaryDirectory
+                        .appendingPathComponent("ShodanaExtract", isDirectory: true)
+                        .appendingPathComponent(UUID().uuidString, isDirectory: true)
 
-                    try await ArchiveClient.extractArchive(
-                        format: format,
-                        archiveURL: item.url,
-                        destinationDirectory: destinationDirectory
+                    defer {
+                        try? fileManager.removeItem(at: stagingDirectory)
+                    }
+
+                    try await ArchiveClient.extractArchive(format: format, archiveURL: item.url, destinationDirectory: stagingDirectory)
+                    try fileManager.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+                    try moveExtractedContents(
+                        from: stagingDirectory,
+                        into: destinationDirectory,
+                        archiveRootName: destinationDirectory.lastPathComponent
                     )
                     extractedURLs.append(destinationDirectory)
                 }
@@ -2047,10 +2219,50 @@ final class FileBrowserViewModel: ObservableObject {
                 reload()
                 selectedIDs = Set(extractedURLs)
                 selectionAnchorURL = extractedURLs.first
+                selectionFocusURL = extractedURLs.last
             } catch {
                 presentError(error, action: "Extract")
             }
         }
+    }
+
+    private func moveExtractedContents(from stagingDirectory: URL, into destinationDirectory: URL, archiveRootName: String) throws {
+        let sourceRoot = try normalizedExtractionSourceRoot(
+            stagingDirectory: stagingDirectory,
+            archiveRootName: archiveRootName
+        )
+        let children = try fileManager.contentsOfDirectory(
+            at: sourceRoot,
+            includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey],
+            options: []
+        )
+
+        for child in children {
+            let destinationURL = destinationDirectory.appendingPathComponent(child.lastPathComponent)
+            try fileManager.moveItem(at: child, to: destinationURL)
+        }
+    }
+
+    private func normalizedExtractionSourceRoot(stagingDirectory: URL, archiveRootName: String) throws -> URL {
+        let children = try fileManager.contentsOfDirectory(
+            at: stagingDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey],
+            options: []
+        )
+
+        guard children.count == 1,
+              let onlyChild = children.first,
+              onlyChild.lastPathComponent == archiveRootName else {
+            return stagingDirectory
+        }
+
+        let values = try? onlyChild.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
+
+        guard values?.isDirectory == true, values?.isPackage != true else {
+            return stagingDirectory
+        }
+
+        return onlyChild
     }
 
     private func contextualItems(for item: FileItem) -> [FileItem] {
@@ -2130,9 +2342,10 @@ final class FileBrowserViewModel: ObservableObject {
                 )
                 gitCommitRequest = nil
                 reload()
-                presentMessage(
-                    output.nilIfEmpty ?? L10n.string("Git commit completed."),
-                    title: L10n.string("Action Complete")
+                presentGitResult(
+                    action: "Git Commit",
+                    output: output,
+                    fallbackMessage: "Git commit completed."
                 )
             } catch {
                 presentError(error, action: "Git Commit")
@@ -2150,6 +2363,10 @@ final class FileBrowserViewModel: ObservableObject {
 
     func cancelGitBranchRequest() {
         gitBranchRequest = nil
+    }
+
+    func clearGitOperationResult() {
+        gitOperationResult = nil
     }
 
     func gitBranch(request: GitBranchRequest, branchName: String) {
@@ -2196,9 +2413,10 @@ final class FileBrowserViewModel: ObservableObject {
             do {
                 let output = try await GitClient.add(paths: paths, in: repositoryURL)
                 reload()
-                presentMessage(
-                    output.nilIfEmpty ?? L10n.string("Git add completed."),
-                    title: L10n.string("Action Complete")
+                presentGitResult(
+                    action: "Git Add",
+                    output: output,
+                    fallbackMessage: "Git add completed."
                 )
             } catch {
                 presentError(error, action: "Git Add")
@@ -2270,9 +2488,10 @@ final class FileBrowserViewModel: ObservableObject {
             do {
                 let output = try await operation(repositoryURL)
                 reload()
-                presentMessage(
-                    output.nilIfEmpty ?? L10n.string(successMessage),
-                    title: L10n.string("Action Complete")
+                presentGitResult(
+                    action: action,
+                    output: output,
+                    fallbackMessage: successMessage
                 )
             } catch {
                 presentError(error, action: action)
@@ -4517,6 +4736,51 @@ final class FileBrowserViewModel: ObservableObject {
     private func presentError(_ error: Error, action: String) {
         alertTitle = L10n.string("Action Failed")
         errorMessage = L10n.format("error.action_failed", L10n.string(action), error.localizedDescription)
+    }
+
+    private func presentGitResult(action: String, output: String, fallbackMessage: String) {
+        let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let detail = trimmedOutput.nilIfEmpty ?? L10n.string(fallbackMessage)
+        let summary = gitResultSummary(from: trimmedOutput).nilIfEmpty ?? L10n.string(fallbackMessage)
+
+        gitOperationResult = GitOperationResult(
+            actionTitle: L10n.string(action),
+            summary: summary,
+            detail: detail
+        )
+    }
+
+    private func gitResultSummary(from output: String) -> String {
+        let lines = output
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard !lines.isEmpty else {
+            return ""
+        }
+
+        if let upToDateLine = lines.first(where: { line in
+            line.localizedCaseInsensitiveContains("already up to date")
+                || line.localizedCaseInsensitiveContains("everything up-to-date")
+        }) {
+            return upToDateLine
+        }
+
+        if let fastForwardLine = lines.first(where: { $0.localizedCaseInsensitiveContains("fast-forward") }) {
+            return fastForwardLine
+        }
+
+        if let conflictLine = lines.first(where: { $0.localizedCaseInsensitiveContains("conflict") }) {
+            return conflictLine
+        }
+
+        if let branchUpdateLine = lines.first(where: { $0.contains(" -> ") }) {
+            return branchUpdateLine
+        }
+
+        return lines.first ?? ""
     }
 
     private func presentMessage(_ message: String, title: String = L10n.string("Notice")) {

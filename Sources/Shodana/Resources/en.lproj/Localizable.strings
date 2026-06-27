@@ -21,6 +21,8 @@
 "Search below path" = "Search below path";
 "Search Results" = "Search Results";
 "Searching..." = "Searching...";
+"Search Cancelled" = "Search Cancelled";
+"Stop Search" = "Stop Search";
 "Enter a search term" = "Enter a search term";
 "No Results" = "No Results";
 "Path" = "Path";
@@ -90,6 +92,7 @@
 "File" = "File";
 "Symbolic Link" = "Symbolic Link";
 "Open" = "Open";
+"Get Info" = "Get Info";
 "Show Package Contents" = "Show Package Contents";
 "Reconnect" = "Reconnect";
 "Rename" = "Rename";
@@ -221,6 +224,11 @@
 "Open S3 item" = "Open S3 item";
 "Git" = "Git";
 "Git actions" = "Git actions";
+"Git Result" = "Git Result";
+"Action" = "Action";
+"Summary" = "Summary";
+"Details" = "Details";
+"Copy Details" = "Copy Details";
 "Git Pull" = "Git Pull";
 "Git Push" = "Git Push";
 "Git Add" = "Git Add";
@@ -252,3 +260,11 @@
 "git.tracking.ahead" = "%d unpushed commit(s).";
 "git.tracking.behind" = "%d incoming commit(s).";
 "git.tracking.ahead_behind" = "%d unpushed commit(s), %d incoming commit(s).";
+"Close" = "Close";
+"Location" = "Location";
+"Multiple Locations" = "Multiple Locations";
+"Calculating Size Unavailable" = "Size unavailable";
+"Unknown" = "Unknown";
+"Items" = "Items";
+"Total Size" = "Total Size";
+"Multiple Items" = "Multiple Items";

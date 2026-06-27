@@ -92,6 +92,14 @@ struct ContentView: View {
                 }
             )
         }
+        .sheet(item: $browser.fileInfoRequest) { request in
+            FileInfoSheet(
+                request: request,
+                onClose: {
+                    browser.cancelGetInfo()
+                }
+            )
+        }
         .sheet(item: $browser.gitCommitRequest) { request in
             GitCommitSheet(
                 request: request,
@@ -111,6 +119,14 @@ struct ContentView: View {
                 },
                 onCancel: {
                     browser.cancelGitBranchRequest()
+                }
+            )
+        }
+        .sheet(item: $browser.gitOperationResult) { result in
+            GitOperationResultSheet(
+                result: result,
+                onClose: {
+                    browser.clearGitOperationResult()
                 }
             )
         }
@@ -159,6 +175,11 @@ struct ContentView: View {
         }
 
         pasteboardShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if shouldHandleFileSelectionNavigation(event) {
+                browser.extendSelectionByKeyboard(offset: event.keyCode == 126 ? -1 : 1)
+                return nil
+            }
+
             guard shouldHandleFilePasteboardShortcut(event) else {
                 return event
             }
@@ -197,6 +218,24 @@ struct ContentView: View {
               !flags.contains(.option),
               !flags.contains(.control),
               ["x", "c", "v"].contains(event.charactersIgnoringModifiers?.lowercased() ?? "") else {
+            return false
+        }
+
+        return !browser.isTextInputActive
+    }
+
+    private func shouldHandleFileSelectionNavigation(_ event: NSEvent) -> Bool {
+        guard hostingWindow == nil || hostingWindow === NSApp.keyWindow else {
+            return false
+        }
+
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        guard flags.contains(.shift),
+              !flags.contains(.command),
+              !flags.contains(.option),
+              !flags.contains(.control),
+              event.keyCode == 125 || event.keyCode == 126 else {
             return false
         }
 
@@ -671,6 +710,10 @@ struct SearchToolbarControls: View {
         if browser.isSearching {
             ProgressView()
                 .controlSize(.small)
+
+            ToolbarIconButton(systemImageName: "xmark.circle.fill", help: "Stop Search") {
+                browser.cancelSearch()
+            }
         }
     }
 }
@@ -1440,8 +1483,8 @@ struct FileListRowsView: View {
                             .padding(.horizontal, 14)
                     }
 
-                    ForEach(group.items) { item in
-                        FileListRowContainer(item: item)
+                    ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
+                        FileListRowContainer(item: item, isStriped: index % 2 == 1)
                     }
                 }
             }
@@ -1455,16 +1498,27 @@ struct FileListRowContainer: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
 
     let item: FileItem
+    let isStriped: Bool
 
     private var isSelected: Bool {
         browser.selectedIDs.contains(item.url)
     }
 
+    private var rowBackground: Color {
+        if isSelected {
+            return Color.accentColor.opacity(0.18)
+        }
+
+        return isStriped
+            ? Color(nsColor: .controlBackgroundColor).opacity(0.45)
+            : Color.clear
+    }
+
     var body: some View {
         FileRow(item: item)
-            .padding(.horizontal, 14)
+            .padding(.horizontal, FileListLayout.rowHorizontalPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+            .background(rowBackground)
             .contentShape(Rectangle())
             .contextMenu {
                 FileContextMenu(item: item)
@@ -2234,6 +2288,14 @@ struct FileSystemIcon: View {
     }
 }
 
+private enum FileListLayout {
+    static let rowHorizontalPadding: CGFloat = 14
+    static let columnHorizontalPadding: CGFloat = 6
+    static let modifiedColumnWidth: CGFloat = 180
+    static let sizeColumnWidth: CGFloat = 110
+    static let kindColumnWidth: CGFloat = 170
+}
+
 struct FileHeaderRow: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
 
@@ -2243,17 +2305,17 @@ struct FileHeaderRow: View {
                 .frame(minWidth: 260, maxWidth: .infinity, alignment: .leading)
 
             HeaderCell(title: "Modified", column: .modifiedAt)
-                .frame(width: 180, alignment: .leading)
+                .frame(width: FileListLayout.modifiedColumnWidth, alignment: .leading)
 
             HeaderCell(title: "Size", column: .size)
-                .frame(width: 110, alignment: .trailing)
+                .frame(width: FileListLayout.sizeColumnWidth, alignment: .trailing)
 
             HeaderCell(title: "Kind", column: .kind)
-                .frame(width: 170, alignment: .leading)
+                .frame(width: FileListLayout.kindColumnWidth, alignment: .leading)
         }
         .font(.caption.weight(.semibold))
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 14)
+        .padding(.horizontal, FileListLayout.rowHorizontalPadding)
         .frame(height: 30)
         .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -2278,6 +2340,7 @@ struct HeaderCell: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: column == .size ? .trailing : .leading)
+            .padding(.horizontal, FileListLayout.columnHorizontalPadding)
         }
         .buttonStyle(.plain)
     }
@@ -2295,23 +2358,27 @@ struct FileRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+            .padding(.horizontal, FileListLayout.columnHorizontalPadding)
             .frame(minWidth: 260, maxWidth: .infinity, alignment: .leading)
 
             Text(item.formattedModifiedAt)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .frame(width: 180, alignment: .leading)
+                .padding(.horizontal, FileListLayout.columnHorizontalPadding)
+                .frame(width: FileListLayout.modifiedColumnWidth, alignment: .leading)
 
             Text(item.formattedSize)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .frame(width: 110, alignment: .trailing)
+                .padding(.horizontal, FileListLayout.columnHorizontalPadding)
+                .frame(width: FileListLayout.sizeColumnWidth, alignment: .trailing)
 
             Text(L10n.string(item.kind))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(width: 170, alignment: .leading)
+                .padding(.horizontal, FileListLayout.columnHorizontalPadding)
+                .frame(width: FileListLayout.kindColumnWidth, alignment: .leading)
         }
         .font(.system(size: 13))
         .frame(height: 28)
@@ -2333,6 +2400,10 @@ struct FileContextMenu: View {
             Button(L10n.string("Show Package Contents")) {
                 browser.showPackageContents(item)
             }
+        }
+
+        Button(L10n.string("Get Info")) {
+            browser.beginGetInfo(item)
         }
 
         Divider()
@@ -2791,6 +2862,189 @@ struct GitRepositoryMenuItems: View {
         Button(L10n.string("Merge Branch...")) {
             browser.beginGitMergeBranch()
         }
+    }
+}
+
+struct GitOperationResultSheet: View {
+    let result: GitOperationResult
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(L10n.string("Git Result"))
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 8) {
+                FileInfoRow(title: "Action", value: result.actionTitle)
+                FileInfoRow(title: "Summary", value: result.summary)
+            }
+
+            Text(L10n.string("Details"))
+                .font(.subheadline.weight(.semibold))
+
+            ScrollView {
+                Text(result.detail)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(10)
+            }
+            .frame(minHeight: 160, maxHeight: 260)
+            .background(Color(nsColor: .textBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+
+            HStack {
+                Spacer()
+
+                Button(L10n.string("Copy Details")) {
+                    let pasteboard = NSPasteboard.general
+                    pasteboard.clearContents()
+                    pasteboard.setString(result.detail, forType: .string)
+                }
+
+                Button(L10n.string("Close")) {
+                    onClose()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 560)
+    }
+}
+
+struct FileInfoSheet: View {
+    let request: FileInfoRequest
+    let onClose: () -> Void
+
+    private var items: [FileItem] {
+        request.items
+    }
+
+    private var totalSize: Int64? {
+        let sizes = items.compactMap(\.size)
+
+        guard !sizes.isEmpty else {
+            return nil
+        }
+
+        return sizes.reduce(0, +)
+    }
+
+    private var locationText: String {
+        guard let firstURL = items.first?.url else {
+            return ""
+        }
+
+        if items.count == 1 {
+            return displayString(for: firstURL.deletingLastPathComponent())
+        }
+
+        let parentURLs = Set(items.map { displayString(for: $0.url.deletingLastPathComponent()) })
+
+        guard parentURLs.count == 1, let parentURL = parentURLs.first else {
+            return L10n.string("Multiple Locations")
+        }
+
+        return parentURL
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                if items.count == 1, let item = items.first {
+                    FileSystemIcon(item: item, size: 42)
+                } else {
+                    Image(systemName: "square.stack.3d.up")
+                        .font(.system(size: 36))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 42, height: 42)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                if let item = items.first, items.count == 1 {
+                    FileInfoRow(title: "Name", value: item.displayName)
+                    FileInfoRow(title: "Kind", value: L10n.string(item.kind))
+                    FileInfoRow(title: "Location", value: locationText)
+                    FileInfoRow(title: "Size", value: item.formattedSize.nilIfEmpty ?? L10n.string("Calculating Size Unavailable"))
+                    FileInfoRow(title: "Modified", value: item.formattedModifiedAt.nilIfEmpty ?? L10n.string("Unknown"))
+                    FileInfoRow(title: "Path", value: displayString(for: item.url))
+                } else {
+                    FileInfoRow(title: "Items", value: L10n.format("items.count", items.count))
+                    FileInfoRow(title: "Location", value: locationText)
+                    FileInfoRow(
+                        title: "Total Size",
+                        value: totalSize.map { $0.formatted(.byteCount(style: .file)) } ?? L10n.string("Calculating Size Unavailable")
+                    )
+                }
+            }
+
+            HStack {
+                Spacer()
+
+                Button(L10n.string("Close")) {
+                    onClose()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+
+    private var title: String {
+        if items.count == 1, let item = items.first {
+            return item.displayName
+        }
+
+        return L10n.string("Multiple Items")
+    }
+
+    private var subtitle: String {
+        items.count == 1 ? L10n.string("Get Info") : L10n.format("items.count", items.count)
+    }
+
+    private func displayString(for url: URL) -> String {
+        if SFTPClient.isSFTPURL(url) || S3Client.isS3URL(url) {
+            return url.absoluteString
+        }
+
+        return url.path
+    }
+}
+
+struct FileInfoRow: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 6) {
+            GridRow {
+                Text(L10n.string(title))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 92, alignment: .trailing)
+
+                Text(value)
+                    .textSelection(.enabled)
+                    .lineLimit(3)
+                    .truncationMode(.middle)
+            }
+        }
+        .font(.system(size: 13))
     }
 }
 
