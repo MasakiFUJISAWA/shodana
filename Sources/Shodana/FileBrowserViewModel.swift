@@ -272,6 +272,19 @@ final class FileBrowserViewModel: ObservableObject {
         canGitAddSelection
     }
 
+    var shouldShowCloudStatusColumn: Bool {
+        !isCurrentRemote && CloudFileStatusDetector.isCloudManaged(currentURL)
+    }
+
+    func cloudStatus(for item: FileItem) -> CloudFileStatus? {
+        guard shouldShowCloudStatusColumn,
+              item.url.isFileURL else {
+            return nil
+        }
+
+        return CloudFileStatusDetector.status(for: item.url) ?? .unknown
+    }
+
     func gitStatus(for item: FileItem) -> GitFileStatus? {
         guard let repositoryURL = gitRepositoryInfo?.rootURL,
               item.url.isFileURL,
@@ -2739,6 +2752,8 @@ final class FileBrowserViewModel: ObservableObject {
             return 4
         case .untracked:
             return 5
+        case .ignored:
+            return 6
         }
     }
 

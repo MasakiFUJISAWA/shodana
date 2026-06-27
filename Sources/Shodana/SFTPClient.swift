@@ -152,7 +152,7 @@ enum SFTPClient {
 
     static func createDirectory(at url: URL) async throws {
         let spec = try connectionSpec(for: url)
-        try await runRemoteMutation(spec: spec, command: "mkdir -- \(shellQuoted(spec.path ?? "/"))")
+        try await runRemoteMutation(spec: spec, command: "mkdir -p -- \(shellQuoted(spec.path ?? "/"))")
     }
 
     static func createFile(at url: URL) async throws {

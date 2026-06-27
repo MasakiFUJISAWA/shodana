@@ -95,7 +95,7 @@ enum GitClient {
 
     static func status(in repositoryURL: URL) async throws -> [String: GitFileStatus] {
         let output = try await output(
-            arguments: ["status", "--porcelain=v1"],
+            arguments: ["status", "--porcelain=v1", "--ignored"],
             currentDirectoryURL: repositoryURL
         )
         var statuses: [String: GitFileStatus] = [:]
@@ -202,6 +202,10 @@ enum GitClient {
 
         if code == "??" {
             return .untracked
+        }
+
+        if code == "!!" {
+            return .ignored
         }
 
         if code.contains("D") {

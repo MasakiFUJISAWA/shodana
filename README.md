@@ -61,7 +61,8 @@ Shodana は、次のような作業を一つのワークスペースにまとめ
 - 現在開いているフォルダが Git リポジトリの場合に自動検出
 - ステータスバーにブランチ名を表示
 - 未プッシュ、リモート側の進行状態を矢印で表示
-- ファイル一覧に Git Status バッジを表示
+- ファイル一覧に独立した `Git` 列を表示
+- `M Modified`、`A Added`、`D Deleted`、`? Untracked`、`- Ignored` などの状態を色付きで表示
 - ステータスバーの Git メニューから Pull、Push、ブランチ切り替え、Merge
 - 右クリックメニューから選択項目の Git Add、Git Commit
 - Commit Message 入力ダイアログ
@@ -87,6 +88,9 @@ Shodana は、次のような作業を一つのワークスペースにまとめ
 - Google Drive、OneDrive、SharePoint の同期フォルダを `Locations` に表示
 - マウント済みボリューム、外部ドライブ、NAS を `Locations` に表示
 - `Locations` の表示名指定、並び替え
+- クラウド同期フォルダではファイル一覧に独立した `Cloud` 列を表示
+- `Synced`、`Cloud Only`、`Syncing`、`Error`、`Pinned`、`Unknown` を色付きで表示
+- OneDrive、SharePoint、Google Drive、iCloud Drive などは取得できるメタデータからベストエフォートで状態判定
 
 ### Development Tools
 
@@ -101,28 +105,37 @@ Shodana は、次のような作業を一つのワークスペースにまとめ
 - Favorites の削除
 - Dock メニューから新規ウィンドウ、Desktop、Downloads、任意フォルダを開く
 - `shodana://` URL スキームから Shodana を開く
+- Folder Compare: ローカル、マウント済みSMB/クラウド、SFTP、S3のフォルダ比較
+- Folder Sync: Mirror、Update、Two-Way、Backup モード
+- Dry Run、同期前プレビュー、大量削除確認、CSVログ出力
+- `.gitignore` とよくある除外パターンを考慮した比較
+- ローカルファイルは SHA-256 による内容比較に対応
 - 日本語/英語の表示切り替え
 - システム、ライト、ダークの外観切り替え
 
 ## Roadmap
 
-Shodana は開発中のアプリです。以下は、現在未実装または強化予定の機能候補です。
+Shodana は開発中のアプリです。以前の Priority 1 として挙げていたタブ、デュアルペイン、Git Status、Git Diff、Git History、Branch 切り替え、Clone Repository は、現在は初期実装済みです。
+
+以下は、実装済み機能をさらに磨き込むための強化候補です。
 
 ### Priority 1
 
-- タブの状態保持: タブごとの履歴、選択状態、検索状態を保持
-- デュアルペイン強化: 左右ペイン間のコピー、移動、同期操作を明確化
-- Git Status 強化: ステージ済み、未ステージ、リネーム、競合の詳細表示
-- Git Diff Viewer 強化: ファイル単位の差分ナビゲーション、色付き表示
-- Git History 強化: コミット詳細、変更ファイル、ブランチグラフ表示
+- タブの状態保持: タブごとの履歴、選択状態、検索状態、再起動後の復元
+- デュアルペイン強化: 左右ペイン間のコピー、移動、比較、同期操作をより直接的に実行
+- Git Status 強化: ステージ済み/未ステージの区別、サブモジュール、競合の詳細表示
+- Git Diff Viewer 強化: 色付き差分、ファイル単位の差分ナビゲーション、ステージ/アンステージ操作
+- Git History 強化: コミット詳細、変更ファイル、ブランチグラフ、ファイル単位履歴
 - Clone Repository 強化: clone 後の自動オープン、履歴、よく使うホスト補完
+- Cloud Status 強化: OneDrive、SharePoint、Google Drive、iCloud Drive のプロバイダ別メタデータ対応精度向上
+- Folder Compare / Sync 強化: 競合解決UI、キャッシュ、詳細進捗、バックグラウンドジョブ化
 
 ### Priority 2
 
-- Folder Compare: ローカル、SFTP、S3 などのフォルダ比較
-- Folder Sync: Local、SFTP、S3 間の同期
-- Copy Queue: コピー、移動、アップロード、ダウンロードをバックグラウンド実行
-- Background Upload: 大量ファイル転送の進捗管理
+- Folder Compare 強化: テキストDiff Viewer、画像の左右プレビュー、差分キャッシュによる高速化
+- Folder Sync 強化: Undo、同期履歴、スケジューラ
+- Copy Queue: コピー、移動、アップロード、ダウンロードのジョブ管理
+- Background Upload: 大量ファイル転送の詳細進捗、残り時間表示
 - Advanced Search: ファイル内容、正規表現、Git Ignore 対応検索
 - Workspace: Backend、Frontend、Terraform、Docker などの関連フォルダを一括管理
 - Session Restore: 前回終了時のウィンドウ、タブ、接続先を復元
@@ -251,6 +264,7 @@ cp -R .build/release/Shodana.app /Applications/
 
 - 表示形式の切り替え: 一覧、アイコン、カラム、ギャラリー
 - グループ表示: なし、種類、変更日、サイズ
+- Git Clone、Git Add、Git Commit、Git Pull、Git Push、Git Merge
 - フォルダ作成
 - ファイル作成
 - 削除
@@ -394,6 +408,21 @@ Dock上のShodanaアイコンを右クリックすると、次のメニューか
 - `FTP`: 接続種別としては用意していますが、現時点では段階的実装中です。
 
 接続した場所は `Locations` に保存されます。Shodana を再起動したときや `Reload Locations` を実行したときに再接続を試みます。接続できない場合も Locations には残り、失敗アイコン付きで表示されます。
+
+## Folder Compare / Sync を使う
+
+上部のタブバー付近にある `Compare / Sync` ボタンから、2つのフォルダを比較・同期できます。デュアルペイン表示中は、左ペインと右ペインの現在位置が初期値として入ります。
+
+比較では、存在差異、サイズ差異、更新日時差異、内容差異を一覧表示します。ローカルファイル同士は SHA-256 を使った内容比較に対応しています。SFTP や S3 などリモート側は、まずサイズと更新日時を中心に比較します。
+
+同期モードは次の通りです。
+
+- `Mirror`: 左を正として右を一致させます。右だけにある項目は削除対象になります。
+- `Update`: 左から右へ追加・更新します。削除は行いません。
+- `Two-Way`: 左右の新しい方を採用します。判断できないものは競合として実行を止めます。
+- `Backup`: 右側の `backup/yyyy-MM-dd-HHmmss/` 配下へ世代コピーします。
+
+`Dry Run` がオンの場合、実際にはコピーや削除をせず、実行予定だけを確認できます。同期後は `~/Library/Logs/Shodana/` に CSV ログを保存します。
 
 ## デバッグ実行
 

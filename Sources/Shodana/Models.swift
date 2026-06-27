@@ -174,6 +174,7 @@ enum GitFileStatus: String, Hashable, Sendable {
     case deleted
     case renamed
     case untracked
+    case ignored
     case conflicted
 
     var badge: String {
@@ -188,6 +189,8 @@ enum GitFileStatus: String, Hashable, Sendable {
             return "R"
         case .untracked:
             return "?"
+        case .ignored:
+            return "-"
         case .conflicted:
             return "!"
         }
@@ -205,8 +208,53 @@ enum GitFileStatus: String, Hashable, Sendable {
             return "Git Status Renamed"
         case .untracked:
             return "Git Status Untracked"
+        case .ignored:
+            return "Git Status Ignored"
         case .conflicted:
             return "Git Status Conflicted"
+        }
+    }
+}
+
+enum CloudFileStatus: String, Hashable, Sendable {
+    case synced
+    case cloudOnly
+    case syncing
+    case error
+    case pinned
+    case unknown
+
+    var badge: String {
+        switch self {
+        case .synced:
+            return "✓"
+        case .cloudOnly:
+            return "☁"
+        case .syncing:
+            return "↻"
+        case .error:
+            return "!"
+        case .pinned:
+            return "●"
+        case .unknown:
+            return "?"
+        }
+    }
+
+    var titleKey: String {
+        switch self {
+        case .synced:
+            return "Cloud Status Synced"
+        case .cloudOnly:
+            return "Cloud Status Cloud Only"
+        case .syncing:
+            return "Cloud Status Syncing"
+        case .error:
+            return "Cloud Status Error"
+        case .pinned:
+            return "Cloud Status Pinned"
+        case .unknown:
+            return "Cloud Status Unknown"
         }
     }
 }

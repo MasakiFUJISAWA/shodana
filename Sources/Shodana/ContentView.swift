@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var selectedTabID: UUID?
     @State private var isSwitchingTabs = false
     @State private var isDualPaneEnabled = false
+    @State private var isFolderCompareSyncPresented = false
 
     private let minimumSidebarWidth: CGFloat = 220
     private let preferredMaximumSidebarWidth: CGFloat = 560
@@ -52,7 +53,10 @@ struct ContentView: View {
                         onSelect: selectTab,
                         onAdd: addTab,
                         onClose: closeTab,
-                        onToggleDualPane: toggleDualPane
+                        onToggleDualPane: toggleDualPane,
+                        onCompareSync: {
+                            isFolderCompareSyncPresented = true
+                        }
                     )
 
                     Divider()
@@ -88,6 +92,13 @@ struct ContentView: View {
         }
         .onDisappear {
             removePasteboardShortcutMonitor()
+        }
+        .sheet(isPresented: $isFolderCompareSyncPresented) {
+            FolderCompareSyncSheet(
+                leftInitialURL: browser.currentURL,
+                rightInitialURL: isDualPaneEnabled ? secondaryBrowser.currentURL : browser.currentURL,
+                showHiddenFiles: browser.showHiddenFiles
+            )
         }
     }
 
@@ -273,6 +284,7 @@ struct BrowserTabBar: View {
     let onAdd: () -> Void
     let onClose: (BrowserTab) -> Void
     let onToggleDualPane: () -> Void
+    let onCompareSync: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
@@ -300,6 +312,10 @@ struct BrowserTabBar: View {
                 help: "Dual Pane"
             ) {
                 onToggleDualPane()
+            }
+
+            ToolbarIconButton(systemImageName: "arrow.left.arrow.right", help: "Compare / Sync") {
+                onCompareSync()
             }
         }
         .padding(.horizontal, 10)
@@ -1040,6 +1056,31 @@ struct FileActionBarView: View {
                 browser.beginGitClone()
             }
             .disabled(!browser.canCloneRepository)
+
+            ToolbarIconButton(systemImageName: "plus.circle", help: "Git Add Selected") {
+                browser.gitAddSelection()
+            }
+            .disabled(!browser.canGitAddSelection)
+
+            ToolbarIconButton(systemImageName: "checkmark.circle", help: "Git Commit Selected...") {
+                browser.beginGitCommitSelection()
+            }
+            .disabled(!browser.canGitCommitSelection)
+
+            ToolbarIconButton(systemImageName: "arrow.down.circle", help: "Git Pull") {
+                browser.gitPull()
+            }
+            .disabled(!browser.canUseGit)
+
+            ToolbarIconButton(systemImageName: "arrow.up.circle", help: "Git Push") {
+                browser.gitPush()
+            }
+            .disabled(!browser.canUseGit)
+
+            ToolbarIconButton(systemImageName: "arrow.triangle.merge", help: "Merge Branch...") {
+                browser.beginGitMergeBranch()
+            }
+            .disabled(!browser.canUseGit)
 
             Divider()
                 .frame(height: 22)
@@ -2550,6 +2591,8 @@ struct FileSystemIcon: View {
 private enum FileListLayout {
     static let rowHorizontalPadding: CGFloat = 14
     static let columnHorizontalPadding: CGFloat = 6
+    static let gitStatusColumnWidth: CGFloat = 116
+    static let cloudStatusColumnWidth: CGFloat = 116
     static let modifiedColumnWidth: CGFloat = 180
     static let sizeColumnWidth: CGFloat = 110
     static let kindColumnWidth: CGFloat = 170
@@ -2562,6 +2605,18 @@ struct FileHeaderRow: View {
         HStack(spacing: 0) {
             HeaderCell(title: "Name", column: .name)
                 .frame(minWidth: 260, maxWidth: .infinity, alignment: .leading)
+
+            if browser.canUseGit {
+                Text(L10n.string("Git"))
+                    .padding(.horizontal, FileListLayout.columnHorizontalPadding)
+                    .frame(width: FileListLayout.gitStatusColumnWidth, alignment: .leading)
+            }
+
+            if browser.shouldShowCloudStatusColumn {
+                Text(L10n.string("Cloud"))
+                    .padding(.horizontal, FileListLayout.columnHorizontalPadding)
+                    .frame(width: FileListLayout.cloudStatusColumnWidth, alignment: .leading)
+            }
 
             HeaderCell(title: "Modified", column: .modifiedAt)
                 .frame(width: FileListLayout.modifiedColumnWidth, alignment: .leading)
@@ -2618,13 +2673,21 @@ struct FileRow: View {
                 Text(item.displayName)
                     .lineLimit(1)
                     .truncationMode(.middle)
-
-                if let gitStatus = browser.gitStatus(for: item) {
-                    GitStatusBadge(status: gitStatus)
-                }
             }
             .padding(.horizontal, FileListLayout.columnHorizontalPadding)
             .frame(minWidth: 260, maxWidth: .infinity, alignment: .leading)
+
+            if browser.canUseGit {
+                GitStatusCell(status: browser.gitStatus(for: item))
+                    .padding(.horizontal, FileListLayout.columnHorizontalPadding)
+                    .frame(width: FileListLayout.gitStatusColumnWidth, alignment: .leading)
+            }
+
+            if browser.shouldShowCloudStatusColumn {
+                CloudStatusCell(status: browser.cloudStatus(for: item))
+                    .padding(.horizontal, FileListLayout.columnHorizontalPadding)
+                    .frame(width: FileListLayout.cloudStatusColumnWidth, alignment: .leading)
+            }
 
             Text(item.formattedModifiedAt)
                 .foregroundStyle(.secondary)
@@ -2651,6 +2714,25 @@ struct FileRow: View {
     }
 }
 
+struct GitStatusCell: View {
+    let status: GitFileStatus?
+
+    var body: some View {
+        if let status {
+            HStack(spacing: 5) {
+                GitStatusBadge(status: status)
+
+                Text(L10n.string(status.titleKey))
+                    .font(.caption2)
+                    .foregroundStyle(status.listColor)
+                    .lineLimit(1)
+            }
+        } else {
+            Text("")
+        }
+    }
+}
+
 struct GitStatusBadge: View {
     let status: GitFileStatus
 
@@ -2662,25 +2744,84 @@ struct GitStatusBadge: View {
             .padding(.horizontal, 2)
             .background(
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(color)
+                    .fill(status.listColor)
             )
             .help(L10n.string(status.titleKey))
     }
+}
 
-    private var color: Color {
-        switch status {
+struct CloudStatusCell: View {
+    let status: CloudFileStatus?
+
+    var body: some View {
+        if let status {
+            HStack(spacing: 5) {
+                CloudStatusBadge(status: status)
+
+                Text(L10n.string(status.titleKey))
+                    .font(.caption2)
+                    .foregroundStyle(status.listColor)
+                    .lineLimit(1)
+            }
+        } else {
+            Text("")
+        }
+    }
+}
+
+struct CloudStatusBadge: View {
+    let status: CloudFileStatus
+
+    var body: some View {
+        Text(status.badge)
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .foregroundStyle(.white)
+            .frame(minWidth: 17, minHeight: 15)
+            .padding(.horizontal, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(status.listColor)
+            )
+            .help(L10n.string(status.titleKey))
+    }
+}
+
+private extension GitFileStatus {
+    var listColor: Color {
+        switch self {
         case .modified:
-            return .orange
+            return .blue
         case .added:
             return .green
         case .deleted:
             return .red
         case .renamed:
-            return .blue
+            return .cyan
         case .untracked:
-            return .secondary
+            return .orange
+        case .ignored:
+            return .gray
         case .conflicted:
             return .purple
+        }
+    }
+}
+
+private extension CloudFileStatus {
+    var listColor: Color {
+        switch self {
+        case .synced:
+            return .green
+        case .cloudOnly:
+            return .blue
+        case .syncing:
+            return .orange
+        case .error:
+            return .red
+        case .pinned:
+            return .teal
+        case .unknown:
+            return .gray
         }
     }
 }
