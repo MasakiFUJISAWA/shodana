@@ -3,18 +3,18 @@
 import PackageDescription
 
 let package = Package(
-    name: "Mihako",
+    name: "Shodana",
     defaultLocalization: "en",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "Mihako", targets: ["Mihako"])
+        .executable(name: "Shodana", targets: ["Shodana"])
     ],
     targets: [
         .executableTarget(
-            name: "Mihako",
-            path: "Sources/Mihako",
+            name: "Shodana",
+            path: "Sources/Shodana",
             resources: [
                 .process("Resources")
             ],

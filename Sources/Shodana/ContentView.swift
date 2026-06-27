@@ -1383,7 +1383,7 @@ struct FileListView: View {
             browser.activateFilePane()
         }
         .onDrop(
-            of: MihakoTransferType.urlDropTypeIdentifiers,
+            of: ShodanaTransferType.urlDropTypeIdentifiers,
             isTargeted: nil
         ) { providers in
             browser.dropItems(from: providers, into: browser.currentURL)
@@ -1444,7 +1444,7 @@ struct FileListRowContainer: View {
             })
             .overlay(FileDragInteractionView(item: item).environmentObject(browser))
             .onDrop(
-                of: MihakoTransferType.urlDropTypeIdentifiers,
+                of: ShodanaTransferType.urlDropTypeIdentifiers,
                 isTargeted: nil
             ) { providers in
                 guard item.canNavigateInto else {
@@ -1522,7 +1522,7 @@ struct FileInteractiveItem<Content: View>: View {
             })
             .overlay(FileDragInteractionView(item: item).environmentObject(browser))
             .onDrop(
-                of: MihakoTransferType.urlDropTypeIdentifiers,
+                of: ShodanaTransferType.urlDropTypeIdentifiers,
                 isTargeted: nil
             ) { providers in
                 guard item.canNavigateInto else {
@@ -1779,7 +1779,7 @@ struct FileColumnRow: View {
             .environmentObject(browser)
         )
         .onDrop(
-            of: MihakoTransferType.urlDropTypeIdentifiers,
+            of: ShodanaTransferType.urlDropTypeIdentifiers,
             isTargeted: nil
         ) { providers in
             guard item.canNavigateInto else {

@@ -9,7 +9,7 @@ final class FileBrowserViewModel: ObservableObject {
     @Published var addressText: String
     @Published private(set) var items: [FileItem] = []
     @Published var selectedIDs: Set<URL> = []
-    @Published var showHiddenFiles = UserDefaults.standard.bool(forKey: showHiddenFilesDefaultsKey) {
+    @Published var showHiddenFiles = FileBrowserViewModel.loadShowHiddenFiles() {
         didSet {
             UserDefaults.standard.set(showHiddenFiles, forKey: Self.showHiddenFilesDefaultsKey)
             reload()
@@ -52,15 +52,18 @@ final class FileBrowserViewModel: ObservableObject {
     @Published var isLauncherFoldersSettingsPresented = false
     @Published var groupMode: FileGroupMode = .none
 
-    private static let showHiddenFilesDefaultsKey = "Mihako.showHiddenFiles"
+    private static let showHiddenFilesDefaultsKey = "Shodana.showHiddenFiles"
+    private static let legacyShowHiddenFilesDefaultsKeys = ["Mihako.showHiddenFiles"]
 
     private let fileManager = FileManager.default
-    private let userFavoritesDefaultsKey = "Mihako.userFavoriteFolders"
-    private let legacyUserFavoritesDefaultsKey = "My" + "Finder.userFavoriteFolders"
-    private let serverConnectionsDefaultsKey = "Mihako.serverConnections"
-    private let legacyServerConnectionsDefaultsKey = "My" + "Finder.serverConnections"
-    private let sidebarLocationOrderDefaultsKey = "Mihako.sidebarLocationOrder"
-    private let externalToolsDefaultsKey = "Mihako.externalTools"
+    private let userFavoritesDefaultsKey = "Shodana.userFavoriteFolders"
+    private let legacyUserFavoritesDefaultsKeys = ["Mihako.userFavoriteFolders", "My" + "Finder.userFavoriteFolders"]
+    private let serverConnectionsDefaultsKey = "Shodana.serverConnections"
+    private let legacyServerConnectionsDefaultsKeys = ["Mihako.serverConnections", "My" + "Finder.serverConnections"]
+    private let sidebarLocationOrderDefaultsKey = "Shodana.sidebarLocationOrder"
+    private let legacySidebarLocationOrderDefaultsKeys = ["Mihako.sidebarLocationOrder"]
+    private let externalToolsDefaultsKey = "Shodana.externalTools"
+    private let legacyExternalToolsDefaultsKeys = ["Mihako.externalTools"]
     private var history: [URL]
     private var historyIndex = 0
     private var selectionAnchorURL: URL?
@@ -90,14 +93,20 @@ final class FileBrowserViewModel: ObservableObject {
         history = [initialURL]
         userFavoriteFolders = Self.loadUserFavoriteFolders(
             defaultsKey: userFavoritesDefaultsKey,
-            legacyDefaultsKey: legacyUserFavoritesDefaultsKey
+            legacyDefaultsKeys: legacyUserFavoritesDefaultsKeys
         )
         serverConnections = Self.loadServerConnections(
             defaultsKey: serverConnectionsDefaultsKey,
-            legacyDefaultsKey: legacyServerConnectionsDefaultsKey
+            legacyDefaultsKeys: legacyServerConnectionsDefaultsKeys
         )
-        sidebarLocationOrderIDs = Self.loadSidebarLocationOrder(defaultsKey: sidebarLocationOrderDefaultsKey)
-        externalTools = Self.loadExternalTools(defaultsKey: externalToolsDefaultsKey)
+        sidebarLocationOrderIDs = Self.loadSidebarLocationOrder(
+            defaultsKey: sidebarLocationOrderDefaultsKey,
+            legacyDefaultsKeys: legacySidebarLocationOrderDefaultsKeys
+        )
+        externalTools = Self.loadExternalTools(
+            defaultsKey: externalToolsDefaultsKey,
+            legacyDefaultsKeys: legacyExternalToolsDefaultsKeys
+        )
         launcherFolderShortcuts = LauncherFolderShortcutStore.load()
         refreshSidebarLocations()
         reload()
@@ -967,7 +976,7 @@ final class FileBrowserViewModel: ObservableObject {
         if SFTPClient.isSFTPURL(item.url) {
             provider = NSItemProvider()
             provider.registerDataRepresentation(
-                forTypeIdentifier: MihakoTransferType.sftpURL,
+                forTypeIdentifier: ShodanaTransferType.sftpURL,
                 visibility: .all
             ) { completion in
                 completion(itemURLString.data(using: .utf8), nil)
@@ -983,7 +992,7 @@ final class FileBrowserViewModel: ObservableObject {
         } else if S3Client.isS3URL(item.url) {
             provider = NSItemProvider()
             provider.registerDataRepresentation(
-                forTypeIdentifier: MihakoTransferType.s3URL,
+                forTypeIdentifier: ShodanaTransferType.s3URL,
                 visibility: .all
             ) { completion in
                 completion(itemURLString.data(using: .utf8), nil)
@@ -1039,9 +1048,9 @@ final class FileBrowserViewModel: ObservableObject {
         let urlString = url.absoluteString
 
         if SFTPClient.isSFTPURL(url) {
-            pasteboardItem.setString(urlString, forType: NSPasteboard.PasteboardType(MihakoTransferType.sftpURL))
+            pasteboardItem.setString(urlString, forType: NSPasteboard.PasteboardType(ShodanaTransferType.sftpURL))
         } else if S3Client.isS3URL(url) {
-            pasteboardItem.setString(urlString, forType: NSPasteboard.PasteboardType(MihakoTransferType.s3URL))
+            pasteboardItem.setString(urlString, forType: NSPasteboard.PasteboardType(ShodanaTransferType.s3URL))
         }
 
         pasteboardItem.setString(urlString, forType: .URL)
@@ -1088,7 +1097,7 @@ final class FileBrowserViewModel: ObservableObject {
             .data(using: .utf8)
 
         provider.registerDataRepresentation(
-            forTypeIdentifier: MihakoTransferType.fileURLs,
+            forTypeIdentifier: ShodanaTransferType.fileURLs,
             visibility: .all
         ) { completion in
             completion(urlListData, nil)
@@ -1103,7 +1112,7 @@ final class FileBrowserViewModel: ObservableObject {
         }
 
         provider.registerDataRepresentation(
-            forTypeIdentifier: MihakoTransferType.filenamesPasteboard,
+            forTypeIdentifier: ShodanaTransferType.filenamesPasteboard,
             visibility: .all
         ) { completion in
             completion(filenamesData, nil)
@@ -1115,7 +1124,7 @@ final class FileBrowserViewModel: ObservableObject {
         var acceptedDrop = false
 
         for provider in providers {
-            guard let typeIdentifier = MihakoTransferType.urlDropTypeIdentifiers.first(where: {
+            guard let typeIdentifier = ShodanaTransferType.urlDropTypeIdentifiers.first(where: {
                 provider.hasItemConformingToTypeIdentifier($0)
             }) else {
                 continue
@@ -1133,11 +1142,11 @@ final class FileBrowserViewModel: ObservableObject {
         typeIdentifier: String,
         into destinationFolder: URL
     ) {
-        if typeIdentifier == MihakoTransferType.fileURLs || typeIdentifier == MihakoTransferType.filenamesPasteboard {
+        if typeIdentifier == ShodanaTransferType.fileURLs || typeIdentifier == ShodanaTransferType.filenamesPasteboard {
             provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { [weak self] data, error in
                 let droppedURLs: [URL]
 
-                if typeIdentifier == MihakoTransferType.filenamesPasteboard {
+                if typeIdentifier == ShodanaTransferType.filenamesPasteboard {
                     droppedURLs = data.flatMap(Self.urlsFromFilenamesPasteboardData) ?? []
                 } else {
                     droppedURLs = data
@@ -3099,42 +3108,39 @@ final class FileBrowserViewModel: ObservableObject {
         return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
-    private static func loadUserFavoriteFolders(defaultsKey: String, legacyDefaultsKey: String) -> [URL] {
-        let defaults = UserDefaults.standard
-        let storedPaths = defaults.stringArray(forKey: defaultsKey)
-        let legacyPaths = storedPaths == nil ? defaults.stringArray(forKey: legacyDefaultsKey) : nil
-        let paths = storedPaths ?? legacyPaths ?? []
+    private static func loadShowHiddenFiles() -> Bool {
+        AppDefaults.migratedBool(
+            forKey: showHiddenFilesDefaultsKey,
+            legacyKeys: legacyShowHiddenFilesDefaultsKeys
+        ) ?? false
+    }
 
-        if storedPaths == nil, let legacyPaths {
-            defaults.set(legacyPaths, forKey: defaultsKey)
-        }
-
+    private static func loadUserFavoriteFolders(defaultsKey: String, legacyDefaultsKeys: [String]) -> [URL] {
+        let paths = AppDefaults.migratedStringArray(
+            forKey: defaultsKey,
+            legacyKeys: legacyDefaultsKeys
+        ) ?? []
         return paths.map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL }
     }
 
-    private static func loadServerConnections(defaultsKey: String, legacyDefaultsKey: String) -> [ServerConnection] {
-        let defaults = UserDefaults.standard
-        let storedData = defaults.data(forKey: defaultsKey)
-        let legacyData = storedData == nil ? defaults.data(forKey: legacyDefaultsKey) : nil
-
-        guard let data = storedData ?? legacyData,
+    private static func loadServerConnections(defaultsKey: String, legacyDefaultsKeys: [String]) -> [ServerConnection] {
+        guard let data = AppDefaults.migratedData(forKey: defaultsKey, legacyKeys: legacyDefaultsKeys),
               let connections = try? JSONDecoder().decode([ServerConnection].self, from: data) else {
             return []
-        }
-
-        if storedData == nil, let legacyData {
-            defaults.set(legacyData, forKey: defaultsKey)
         }
 
         return connections
     }
 
-    private static func loadSidebarLocationOrder(defaultsKey: String) -> [String] {
-        UserDefaults.standard.stringArray(forKey: defaultsKey) ?? []
+    private static func loadSidebarLocationOrder(defaultsKey: String, legacyDefaultsKeys: [String]) -> [String] {
+        AppDefaults.migratedStringArray(
+            forKey: defaultsKey,
+            legacyKeys: legacyDefaultsKeys
+        ) ?? []
     }
 
-    private static func loadExternalTools(defaultsKey: String) -> [ExternalTool] {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey) else {
+    private static func loadExternalTools(defaultsKey: String, legacyDefaultsKeys: [String]) -> [ExternalTool] {
+        guard let data = AppDefaults.migratedData(forKey: defaultsKey, legacyKeys: legacyDefaultsKeys) else {
             return ExternalTool.defaultTools
         }
 
@@ -3493,7 +3499,7 @@ final class FileBrowserViewModel: ObservableObject {
 
     private func downloadAndOpen(_ url: URL) {
         let destinationFolder = fileManager.temporaryDirectory
-            .appendingPathComponent("MihakoRemoteOpen", isDirectory: true)
+            .appendingPathComponent("ShodanaRemoteOpen", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
 
         Task {
@@ -3508,7 +3514,7 @@ final class FileBrowserViewModel: ObservableObject {
 
     private func downloadAndOpenS3(_ url: URL) {
         let destinationFolder = fileManager.temporaryDirectory
-            .appendingPathComponent("MihakoRemoteOpen", isDirectory: true)
+            .appendingPathComponent("ShodanaRemoteOpen", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
 
         Task {
@@ -3885,7 +3891,7 @@ final class FileBrowserViewModel: ObservableObject {
 
             if errorNumber == -1743 || message.localizedCaseInsensitiveContains("not authorized") {
                 presentMessage(
-                    "\(action) needs permission to control \(automationTarget). Open System Settings > Privacy & Security > Automation, then allow Mihako to control \(automationTarget)."
+                    "\(action) needs permission to control \(automationTarget). Open System Settings > Privacy & Security > Automation, then allow Shodana to control \(automationTarget)."
                 )
                 return
             }

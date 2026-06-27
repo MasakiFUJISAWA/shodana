@@ -2,7 +2,7 @@
 set -euo pipefail
 
 TARGET_PATH="${1:-${HOME}/Downloads}"
-OUTPUT_APP="${2:-.build/Mihako Downloads.app}"
+OUTPUT_APP="${2:-.build/Shodana Downloads.app}"
 
 TARGET_URL=$(/usr/bin/python3 - "${TARGET_PATH}" <<'PYTHON'
 import os
@@ -10,7 +10,7 @@ import sys
 from urllib.parse import urlencode
 
 path = os.path.abspath(os.path.expanduser(sys.argv[1]))
-print("mihako://open?" + urlencode({"path": path}))
+print("shodana://open?" + urlencode({"path": path}))
 PYTHON
 )
 
@@ -32,7 +32,7 @@ cat > "${OUTPUT_APP}/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key>
     <string>launcher</string>
     <key>CFBundleIdentifier</key>
-    <string>dev.masakifujisawa.mihako.launcher.$(echo "${APP_BASENAME}" | tr -cd '[:alnum:]')</string>
+    <string>dev.masakifujisawa.shodana.launcher.$(echo "${APP_BASENAME}" | tr -cd '[:alnum:]')</string>
     <key>CFBundleName</key>
     <string>${APP_BASENAME}</string>
     <key>CFBundlePackageType</key>

@@ -10,7 +10,7 @@ enum AppMenuLocalizer {
         let appName = NSRunningApplication.current.localizedName
             ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
             ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
-            ?? "Mihako"
+            ?? "Shodana"
 
         localize(menu: mainMenu, appName: appName)
     }

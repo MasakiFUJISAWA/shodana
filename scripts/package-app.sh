@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="Mihako"
+APP_NAME="Shodana"
 APP_DIR=".build/release/${APP_NAME}.app"
 EXECUTABLE=".build/release/${APP_NAME}"
-ICON="Sources/Mihako/Resources/AppIcon.icns"
+ICON="Sources/Shodana/Resources/AppIcon.icns"
 RESOURCE_BUNDLE=".build/release/${APP_NAME}_${APP_NAME}.bundle"
 
 swift build -c release
@@ -30,18 +30,19 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key>
     <string>${APP_NAME}</string>
     <key>CFBundleIdentifier</key>
-    <string>dev.masakifujisawa.mihako</string>
+    <string>dev.masakifujisawa.shodana</string>
     <key>CFBundleName</key>
-    <string>Mihako</string>
+    <string>Shodana</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
             <key>CFBundleURLName</key>
-            <string>Mihako URL</string>
+            <string>Shodana URL</string>
             <key>CFBundleURLSchemes</key>
             <array>
+                <string>shodana</string>
                 <string>mihako</string>
             </array>
         </dict>
@@ -73,7 +74,7 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSAppleEventsUsageDescription</key>
-    <string>Mihako needs permission to open the current folder in Terminal or iTerm.</string>
+    <string>Shodana needs permission to open the current folder in Terminal or iTerm.</string>
 </dict>
 </plist>
 PLIST

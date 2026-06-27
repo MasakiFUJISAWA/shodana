@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 @main
-struct MihakoApp: App {
-    @NSApplicationDelegateAdaptor(MihakoApplicationDelegate.self) private var appDelegate
+struct ShodanaApp: App {
+    @NSApplicationDelegateAdaptor(ShodanaApplicationDelegate.self) private var appDelegate
 
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
@@ -19,7 +19,7 @@ struct MihakoApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Mihako", id: "browser") {
+        WindowGroup("Shodana", id: "browser") {
             BrowserWindowView()
         }
         .commands {
@@ -37,7 +37,7 @@ struct BrowserWindowView: View {
             .environmentObject(browser)
             .focusedSceneValue(\.fileBrowser, browser)
             .onAppear {
-                MihakoApplicationDelegate.openNewWindow = {
+                ShodanaApplicationDelegate.openNewWindow = {
                     openWindow(id: "browser")
                 }
                 ExternalOpenRouter.configure {
@@ -58,7 +58,7 @@ struct BrowserWindowView: View {
 }
 
 @MainActor
-final class MihakoApplicationDelegate: NSObject, NSApplicationDelegate {
+final class ShodanaApplicationDelegate: NSObject, NSApplicationDelegate {
     static var openNewWindow: (() -> Void)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {

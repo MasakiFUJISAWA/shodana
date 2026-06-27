@@ -41,7 +41,7 @@ enum ExternalOpenRouter {
             return url
         }
 
-        guard url.scheme?.lowercased() == "mihako",
+        guard ["shodana", "mihako"].contains(url.scheme?.lowercased() ?? ""),
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return nil
         }

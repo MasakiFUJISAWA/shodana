@@ -10,7 +10,7 @@ let sourceURL = rootURL
     .appendingPathComponent("AppIconSource.png")
 let resourcesURL = rootURL
     .appendingPathComponent("Sources")
-    .appendingPathComponent("Mihako")
+    .appendingPathComponent("Shodana")
     .appendingPathComponent("Resources")
 let buildURL = rootURL
     .appendingPathComponent(".build")

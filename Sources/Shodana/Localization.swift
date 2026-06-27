@@ -20,10 +20,14 @@ enum AppLanguageMode: String, CaseIterable, Identifiable {
 }
 
 enum L10n {
-    private static let languageModeDefaultsKey = "Mihako.languageMode"
+    private static let languageModeDefaultsKey = "Shodana.languageMode"
+    private static let legacyLanguageModeDefaultsKeys = ["Mihako.languageMode"]
 
     static var languageMode: AppLanguageMode {
-        guard let rawValue = UserDefaults.standard.string(forKey: languageModeDefaultsKey),
+        guard let rawValue = AppDefaults.migratedString(
+            forKey: languageModeDefaultsKey,
+            legacyKeys: legacyLanguageModeDefaultsKeys
+        ),
               let mode = AppLanguageMode(rawValue: rawValue) else {
             return .system
         }
@@ -33,9 +37,16 @@ enum L10n {
 
     static func setLanguageMode(_ mode: AppLanguageMode) {
         if mode == .system {
-            UserDefaults.standard.removeObject(forKey: languageModeDefaultsKey)
+            AppDefaults.removeCurrentAndLegacyKeys(
+                languageModeDefaultsKey,
+                legacyKeys: legacyLanguageModeDefaultsKeys
+            )
         } else {
-            UserDefaults.standard.set(mode.rawValue, forKey: languageModeDefaultsKey)
+            AppDefaults.setCurrentAndRemoveLegacy(
+                mode.rawValue,
+                forKey: languageModeDefaultsKey,
+                legacyKeys: legacyLanguageModeDefaultsKeys
+            )
         }
     }
 

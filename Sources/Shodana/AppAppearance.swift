@@ -22,10 +22,14 @@ enum AppAppearanceMode: String, CaseIterable, Identifiable {
 
 @MainActor
 enum AppAppearance {
-    private static let appearanceModeDefaultsKey = "Mihako.appearanceMode"
+    private static let appearanceModeDefaultsKey = "Shodana.appearanceMode"
+    private static let legacyAppearanceModeDefaultsKeys = ["Mihako.appearanceMode"]
 
     static var mode: AppAppearanceMode {
-        guard let rawValue = UserDefaults.standard.string(forKey: appearanceModeDefaultsKey),
+        guard let rawValue = AppDefaults.migratedString(
+            forKey: appearanceModeDefaultsKey,
+            legacyKeys: legacyAppearanceModeDefaultsKeys
+        ),
               let mode = AppAppearanceMode(rawValue: rawValue) else {
             return .system
         }
@@ -35,9 +39,16 @@ enum AppAppearance {
 
     static func setMode(_ mode: AppAppearanceMode) {
         if mode == .system {
-            UserDefaults.standard.removeObject(forKey: appearanceModeDefaultsKey)
+            AppDefaults.removeCurrentAndLegacyKeys(
+                appearanceModeDefaultsKey,
+                legacyKeys: legacyAppearanceModeDefaultsKeys
+            )
         } else {
-            UserDefaults.standard.set(mode.rawValue, forKey: appearanceModeDefaultsKey)
+            AppDefaults.setCurrentAndRemoveLegacy(
+                mode.rawValue,
+                forKey: appearanceModeDefaultsKey,
+                legacyKeys: legacyAppearanceModeDefaultsKeys
+            )
         }
 
         apply(mode)

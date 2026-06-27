@@ -131,10 +131,10 @@ struct RenameRequest: Identifiable {
     let currentName: String
 }
 
-enum MihakoTransferType {
-    static let fileURLs = "dev.masakifujisawa.mihako.file-urls"
-    static let sftpURL = "dev.masakifujisawa.mihako.sftp-url"
-    static let s3URL = "dev.masakifujisawa.mihako.s3-url"
+enum ShodanaTransferType {
+    static let fileURLs = "dev.masakifujisawa.shodana.file-urls"
+    static let sftpURL = "dev.masakifujisawa.shodana.sftp-url"
+    static let s3URL = "dev.masakifujisawa.shodana.s3-url"
     static let filenamesPasteboard = "NSFilenamesPboardType"
 
     static let urlDropTypeIdentifiers = [
@@ -420,10 +420,11 @@ struct LauncherFolderShortcut: Identifiable, Codable, Hashable {
 }
 
 enum LauncherFolderShortcutStore {
-    private static let defaultsKey = "Mihako.launcherFolderShortcuts"
+    private static let defaultsKey = "Shodana.launcherFolderShortcuts"
+    private static let legacyDefaultsKeys = ["Mihako.launcherFolderShortcuts"]
 
     static func load() -> [LauncherFolderShortcut] {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
+        guard let data = AppDefaults.migratedData(forKey: defaultsKey, legacyKeys: legacyDefaultsKeys),
               let shortcuts = try? JSONDecoder().decode([LauncherFolderShortcut].self, from: data) else {
             return []
         }
