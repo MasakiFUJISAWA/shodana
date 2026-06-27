@@ -210,11 +210,14 @@ final class FolderCompareSyncViewModel: ObservableObject {
     @Published var rightText: String
     @Published var compareEntries: [FolderCompareEntry] = []
     @Published var planItems: [FolderSyncPlanItem] = []
+    @Published private var allPlanItems: [FolderSyncPlanItem] = []
+    @Published private var syncCandidatePaths = Set<String>()
+    @Published private var selectedSyncPaths = Set<String>()
     @Published var logRows: [FolderSyncLogRow] = []
     @Published var filter: FolderCompareFilter = .all
     @Published var syncMode: FolderSyncMode = .update {
         didSet {
-            rebuildPlan()
+            rebuildPlan(selectAllByDefault: true)
         }
     }
     @Published var useContentHash = true
@@ -244,6 +247,22 @@ final class FolderCompareSyncViewModel: ObservableObject {
 
     var hasComparison: Bool {
         !compareEntries.isEmpty
+    }
+
+    var hasSyncCandidates: Bool {
+        !allPlanItems.isEmpty
+    }
+
+    var selectedSyncCount: Int {
+        planItems.count
+    }
+
+    var syncCandidateCount: Int {
+        allPlanItems.count
+    }
+
+    var areAllSyncCandidatesSelected: Bool {
+        hasSyncCandidates && selectedSyncPaths.isSuperset(of: allSyncCandidatePaths)
     }
 
     var deleteCount: Int {
@@ -321,6 +340,9 @@ final class FolderCompareSyncViewModel: ObservableObject {
         self.rightURL = rightURL
         compareEntries = []
         planItems = []
+        allPlanItems = []
+        syncCandidatePaths = []
+        selectedSyncPaths = []
         logRows = []
         isComparing = true
         progressText = L10n.string("Scanning folders...")
@@ -350,7 +372,7 @@ final class FolderCompareSyncViewModel: ObservableObject {
                     self.isComparing = false
                     self.progressText = ""
                     self.confirmLargeDeletion = false
-                    self.rebuildPlan()
+                    self.rebuildPlan(selectAllByDefault: true)
                 }
             } catch {
                 await MainActor.run {
@@ -362,18 +384,67 @@ final class FolderCompareSyncViewModel: ObservableObject {
         }
     }
 
-    func rebuildPlan() {
+    func isSyncCandidate(_ entry: FolderCompareEntry) -> Bool {
+        allSyncCandidatePaths.contains(entry.relativePath)
+    }
+
+    func isSyncSelected(_ entry: FolderCompareEntry) -> Bool {
+        isSyncCandidate(entry) && selectedSyncPaths.contains(entry.relativePath)
+    }
+
+    func setSyncSelected(_ isSelected: Bool, for entry: FolderCompareEntry) {
+        guard isSyncCandidate(entry) else {
+            return
+        }
+
+        let affectedPaths = syncCandidatePaths(coveredBy: entry)
+
+        if isSelected {
+            selectedSyncPaths.formUnion(affectedPaths)
+        } else {
+            selectedSyncPaths.subtract(affectedPaths)
+            removeAncestorDirectorySelections(for: entry.relativePath)
+        }
+
+        rebuildPlan()
+    }
+
+    func selectAllSyncCandidates() {
+        selectedSyncPaths = allSyncCandidatePaths
+        rebuildPlan()
+    }
+
+    func clearAllSyncCandidates() {
+        selectedSyncPaths.subtract(allSyncCandidatePaths)
+        rebuildPlan()
+    }
+
+    func rebuildPlan(selectAllByDefault: Bool = false) {
         guard let leftURL, let rightURL else {
+            allPlanItems = []
+            syncCandidatePaths = []
             planItems = []
             return
         }
 
-        planItems = FolderCompareSyncEngine.plan(
+        let plannedItems = FolderCompareSyncEngine.plan(
             entries: compareEntries,
             mode: syncMode,
             leftRootURL: leftURL,
             rightRootURL: rightURL
         )
+        let plannedPaths = Set(plannedItems.map(\.relativePath))
+
+        allPlanItems = plannedItems
+        syncCandidatePaths = plannedPaths
+
+        if selectAllByDefault {
+            selectedSyncPaths = plannedPaths
+        } else {
+            selectedSyncPaths = selectedSyncPaths.intersection(plannedPaths)
+        }
+
+        planItems = filteredPlanItems(from: plannedItems)
         confirmLargeDeletion = false
     }
 
@@ -446,6 +517,50 @@ final class FolderCompareSyncViewModel: ObservableObject {
 
         return URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath, isDirectory: true)
             .standardizedFileURL
+    }
+
+    private var allSyncCandidatePaths: Set<String> {
+        syncCandidatePaths
+    }
+
+    private func filteredPlanItems(from plannedItems: [FolderSyncPlanItem]) -> [FolderSyncPlanItem] {
+        plannedItems.filter { item in
+            guard selectedSyncPaths.contains(item.relativePath) else {
+                return false
+            }
+
+            guard item.kind == .deleteRight,
+                  item.destination?.isDirectory == true else {
+                return true
+            }
+
+            let descendantDeletePaths = plannedItems
+                .filter { candidate in
+                    candidate.kind == .deleteRight
+                        && candidate.relativePath.isDescendant(of: item.relativePath)
+                }
+                .map(\.relativePath)
+
+            return descendantDeletePaths.allSatisfy { selectedSyncPaths.contains($0) }
+        }
+    }
+
+    private func syncCandidatePaths(coveredBy entry: FolderCompareEntry) -> Set<String> {
+        guard entry.left?.isDirectory == true || entry.right?.isDirectory == true else {
+            return [entry.relativePath]
+        }
+
+        return allSyncCandidatePaths.filter { path in
+            path == entry.relativePath || path.isDescendant(of: entry.relativePath)
+        }
+    }
+
+    private func removeAncestorDirectorySelections(for relativePath: String) {
+        for item in allPlanItems where item.source?.isDirectory == true || item.destination?.isDirectory == true {
+            if relativePath.isDescendant(of: item.relativePath) {
+                selectedSyncPaths.remove(item.relativePath)
+            }
+        }
     }
 }
 
@@ -1157,7 +1272,7 @@ private struct IgnoreMatcher {
         let components = relativePath.split(separator: "/").map(String.init)
         let filename = components.last ?? relativePath
 
-        for pattern in patterns {
+        for pattern in patterns.reversed() {
             let normalizedPattern = pattern.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
 
             guard !normalizedPattern.isEmpty else {
@@ -1444,6 +1559,26 @@ struct FolderCompareSyncSheet: View {
 
                 Spacer()
 
+                Text(
+                    String(
+                        format: L10n.string("%d of %d selected for sync"),
+                        viewModel.selectedSyncCount,
+                        viewModel.syncCandidateCount
+                    )
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                Button(L10n.string("Select All")) {
+                    viewModel.selectAllSyncCandidates()
+                }
+                .disabled(!viewModel.hasSyncCandidates || viewModel.areAllSyncCandidatesSelected)
+
+                Button(L10n.string("Clear All")) {
+                    viewModel.clearAllSyncCandidates()
+                }
+                .disabled(!viewModel.hasSyncCandidates || viewModel.selectedSyncCount == 0)
+
                 Picker(L10n.string("Filter"), selection: $viewModel.filter) {
                     ForEach(FolderCompareFilter.allCases) { filter in
                         Text(L10n.string(filter.titleKey)).tag(filter)
@@ -1465,7 +1600,14 @@ struct FolderCompareSyncSheet: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(viewModel.filteredEntries) { entry in
-                            FolderCompareResultRow(entry: entry) {
+                            FolderCompareResultRow(
+                                entry: entry,
+                                isSyncCandidate: viewModel.isSyncCandidate(entry),
+                                isSyncSelected: viewModel.isSyncSelected(entry),
+                                onSyncSelectionChange: { isSelected in
+                                    viewModel.setSyncSelected(isSelected, for: entry)
+                                }
+                            ) {
                                 guard entry.canShowDetail else {
                                     return
                                 }
@@ -1571,6 +1713,8 @@ private struct ResizableSheetWindowConfigurator: NSViewRepresentable {
 private struct FolderCompareHeaderRow: View {
     var body: some View {
         HStack(spacing: 0) {
+            Text(L10n.string("Sync"))
+                .frame(width: 58, alignment: .leading)
             Text(L10n.string("Status"))
                 .frame(width: 150, alignment: .leading)
             Text(L10n.string("Path"))
@@ -1594,10 +1738,28 @@ private struct FolderCompareHeaderRow: View {
 
 private struct FolderCompareResultRow: View {
     let entry: FolderCompareEntry
+    let isSyncCandidate: Bool
+    let isSyncSelected: Bool
+    let onSyncSelectionChange: (Bool) -> Void
     let onOpenDetail: () -> Void
 
     var body: some View {
         HStack(spacing: 0) {
+            Toggle(
+                "",
+                isOn: Binding(
+                    get: { isSyncSelected },
+                    set: { isSelected in
+                        onSyncSelectionChange(isSelected)
+                    }
+                )
+            )
+            .labelsHidden()
+            .toggleStyle(.checkbox)
+            .disabled(!isSyncCandidate)
+            .help(isSyncCandidate ? L10n.string("Include in sync") : L10n.string("No sync action in this mode"))
+            .frame(width: 58, alignment: .leading)
+
             HStack(spacing: 6) {
                 Circle()
                     .fill(entry.status.color)
@@ -1665,7 +1827,8 @@ private struct FolderCompareDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var leftContent: FolderComparePreviewContent = .loading
     @State private var rightContent: FolderComparePreviewContent = .loading
-    @State private var mergeRows: [FolderCompareMergeRow] = []
+    @State private var leftEditableText = ""
+    @State private var rightEditableText = ""
     @State private var isApplyingAction = false
     @State private var actionMessage: String?
     @State private var actionError: String?
@@ -1740,15 +1903,32 @@ private struct FolderCompareDetailSheet: View {
                     .lineLimit(1)
             }
 
-            Button(L10n.string("Use Left")) {
-                copy(source: entry.left, destination: entry.right, successKey: "Left version applied.")
-            }
-            .disabled(!canCopy(source: entry.left, destination: entry.right) || isApplyingAction)
+            if hasTextComparison {
+                Button(L10n.string("Save Left")) {
+                    saveText(to: [.left])
+                }
+                .disabled(!canSaveText(to: .left) || isApplyingAction)
 
-            Button(L10n.string("Use Right")) {
-                copy(source: entry.right, destination: entry.left, successKey: "Right version applied.")
+                Button(L10n.string("Save Right")) {
+                    saveText(to: [.right])
+                }
+                .disabled(!canSaveText(to: .right) || isApplyingAction)
+
+                Button(L10n.string("Save Both")) {
+                    saveText(to: [.left, .right])
+                }
+                .disabled(!canSaveText(to: .left) && !canSaveText(to: .right) || isApplyingAction)
+            } else {
+                Button(L10n.string("Use Left")) {
+                    copy(source: entry.left, destination: entry.right, successKey: "Left version applied.")
+                }
+                .disabled(!canCopy(source: entry.left, destination: entry.right) || isApplyingAction)
+
+                Button(L10n.string("Use Right")) {
+                    copy(source: entry.right, destination: entry.left, successKey: "Right version applied.")
+                }
+                .disabled(!canCopy(source: entry.right, destination: entry.left) || isApplyingAction)
             }
-            .disabled(!canCopy(source: entry.right, destination: entry.left) || isApplyingAction)
 
             Button(L10n.string("Skip")) {
                 dismiss()
@@ -1777,63 +1957,102 @@ private struct FolderCompareDetailSheet: View {
     }
 
     private var mergeEditor: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Text(L10n.string("Line Merge"))
-                    .font(.subheadline.weight(.semibold))
+        HSplitView {
+            FolderCompareEditableTextPane(
+                title: "Left",
+                snapshot: entry.left,
+                text: $leftEditableText
+            )
+            .frame(minWidth: 360)
 
-                Text(String(format: L10n.string("%d merge rows"), mergeRows.count))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Spacer()
-
-                Button(L10n.string("Save to Left")) {
-                    saveMerged(to: [.left])
+            FolderCompareDiffControlColumn(
+                hunks: diffHunks,
+                onCopyLeftToRight: { hunk in
+                    apply(hunk, direction: .leftToRight)
+                },
+                onCopyRightToLeft: { hunk in
+                    apply(hunk, direction: .rightToLeft)
                 }
-                .disabled(!canSaveMerged(to: .left) || isApplyingAction)
+            )
+            .frame(minWidth: 92, idealWidth: 104, maxWidth: 128)
 
-                Button(L10n.string("Save to Right")) {
-                    saveMerged(to: [.right])
-                }
-                .disabled(!canSaveMerged(to: .right) || isApplyingAction)
+            FolderCompareEditableTextPane(
+                title: "Right",
+                snapshot: entry.right,
+                text: $rightEditableText
+            )
+            .frame(minWidth: 360)
+        }
+    }
 
-                Button(L10n.string("Save Both")) {
-                    saveMerged(to: [.left, .right])
-                }
-                .disabled(!canSaveMerged(to: .left) || !canSaveMerged(to: .right) || isApplyingAction)
+    private var diffHunks: [FolderCompareDiffHunk] {
+        FolderCompareLineMerger.hunks(leftText: leftEditableText, rightText: rightEditableText)
+    }
+
+    private func apply(_ hunk: FolderCompareDiffHunk, direction: FolderCompareMergeDirection) {
+        switch direction {
+        case .leftToRight:
+            let leftLines = FolderCompareLineMerger.lines(in: leftEditableText)
+            let replacement = Array(leftLines[safe: hunk.leftRange])
+            rightEditableText = FolderCompareLineMerger.replacingLines(
+                in: rightEditableText,
+                range: hunk.rightRange,
+                with: replacement
+            )
+        case .rightToLeft:
+            let rightLines = FolderCompareLineMerger.lines(in: rightEditableText)
+            let replacement = Array(rightLines[safe: hunk.rightRange])
+            leftEditableText = FolderCompareLineMerger.replacingLines(
+                in: leftEditableText,
+                range: hunk.leftRange,
+                with: replacement
+            )
+        }
+    }
+
+    private func canSaveText(to side: FolderCompareSide) -> Bool {
+        switch side {
+        case .left:
+            return entry.left.map { !$0.isDirectory } ?? false
+        case .right:
+            return entry.right.map { !$0.isDirectory } ?? false
+        }
+    }
+
+    private func saveText(to sides: [FolderCompareSide]) {
+        let targetTexts = sides.compactMap { side -> (FolderSnapshotEntry, String)? in
+            switch side {
+            case .left:
+                return entry.left.map { ($0, leftEditableText) }
+            case .right:
+                return entry.right.map { ($0, rightEditableText) }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+        }
 
-            Divider()
+        guard !targetTexts.isEmpty else {
+            return
+        }
 
-            HStack(spacing: 0) {
-                Text(L10n.string("Line"))
-                    .frame(width: 90, alignment: .leading)
-                Text(L10n.string("Content"))
-                    .frame(minWidth: 340, maxWidth: .infinity, alignment: .leading)
-                Text(L10n.string("Resolution"))
-                    .frame(width: 300, alignment: .leading)
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 14)
-            .frame(height: 28)
-            .background(Color(nsColor: .windowBackgroundColor))
+        isApplyingAction = true
+        actionMessage = nil
+        actionError = nil
 
-            if mergeRows.isEmpty {
-                Spacer()
-                Text(L10n.string("No text lines."))
-                    .foregroundStyle(.secondary)
-                Spacer()
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach($mergeRows) { $row in
-                            FolderCompareMergeRowView(row: $row)
-                        }
-                    }
+        Task {
+            do {
+                for (target, text) in targetTexts {
+                    try await FolderCompareTextWriter.write(text, to: target.url)
+                }
+
+                await MainActor.run {
+                    leftContent = .text(leftEditableText)
+                    rightContent = .text(rightEditableText)
+                    actionMessage = L10n.string("Text file saved.")
+                    isApplyingAction = false
+                }
+            } catch {
+                await MainActor.run {
+                    actionError = error.localizedDescription
+                    isApplyingAction = false
                 }
             }
         }
@@ -1843,15 +2062,12 @@ private struct FolderCompareDetailSheet: View {
         async let left = loadContent(for: entry.left)
         async let right = loadContent(for: entry.right)
         let values = await (left, right)
-        let rows = FolderCompareLineMerger.rows(
-            leftText: values.0.textValue,
-            rightText: values.1.textValue
-        )
 
         await MainActor.run {
             leftContent = values.0
             rightContent = values.1
-            mergeRows = rows
+            leftEditableText = values.0.textValue ?? ""
+            rightEditableText = values.1.textValue ?? ""
         }
     }
 
@@ -1970,55 +2186,6 @@ private struct FolderCompareDetailSheet: View {
             }
         }
     }
-
-    private func canSaveMerged(to side: FolderCompareSide) -> Bool {
-        switch side {
-        case .left:
-            return entry.left.map { !$0.isDirectory } ?? false
-        case .right:
-            return entry.right.map { !$0.isDirectory } ?? false
-        }
-    }
-
-    private func saveMerged(to sides: [FolderCompareSide]) {
-        let targets = sides.compactMap { side -> FolderSnapshotEntry? in
-            switch side {
-            case .left:
-                return entry.left
-            case .right:
-                return entry.right
-            }
-        }
-
-        guard !targets.isEmpty else {
-            return
-        }
-
-        let mergedText = FolderCompareLineMerger.mergedText(from: mergeRows)
-        isApplyingAction = true
-        actionMessage = nil
-        actionError = nil
-
-        Task {
-            do {
-                for target in targets {
-                    try await FolderCompareTextWriter.write(mergedText, to: target.url)
-                }
-
-                await load()
-
-                await MainActor.run {
-                    actionMessage = L10n.string("Merged file saved.")
-                    isApplyingAction = false
-                }
-            } catch {
-                await MainActor.run {
-                    actionError = error.localizedDescription
-                    isApplyingAction = false
-                }
-            }
-        }
-    }
 }
 
 private enum FolderCompareSide {
@@ -2026,118 +2193,527 @@ private enum FolderCompareSide {
     case right
 }
 
-private enum FolderCompareMergeChoice: String, CaseIterable, Identifiable {
-    case left
-    case right
-    case skip
-    case custom
-
-    var id: String { rawValue }
-
-    var titleKey: String {
-        switch self {
-        case .left:
-            return "Use Left"
-        case .right:
-            return "Use Right"
-        case .skip:
-            return "Use Neither"
-        case .custom:
-            return "Merge"
-        }
-    }
+private enum FolderCompareMergeDirection {
+    case leftToRight
+    case rightToLeft
 }
 
-private struct FolderCompareMergeRow: Identifiable, Equatable {
+private struct FolderCompareDiffHunk: Identifiable, Hashable {
     let id = UUID()
-    let leftNumber: Int?
-    let rightNumber: Int?
-    let leftLine: String?
-    let rightLine: String?
-    let isDifferent: Bool
-    var choice: FolderCompareMergeChoice
-    var customText: String
+    let index: Int
+    let leftRange: Range<Int>
+    let rightRange: Range<Int>
 
-    var outputLine: String? {
-        switch choice {
-        case .left:
-            return leftLine
-        case .right:
-            return rightLine
-        case .skip:
-            return nil
-        case .custom:
-            return customText
+    var title: String {
+        String(format: L10n.string("Difference %d"), index)
+    }
+
+    var leftLineText: String {
+        lineText(for: leftRange)
+    }
+
+    var rightLineText: String {
+        lineText(for: rightRange)
+    }
+
+    private func lineText(for range: Range<Int>) -> String {
+        guard !range.isEmpty else {
+            return "-"
         }
+
+        if range.count == 1 {
+            return "\(range.lowerBound + 1)"
+        }
+
+        return "\(range.lowerBound + 1)-\(range.upperBound)"
     }
 }
 
-private struct FolderCompareMergeRowView: View {
-    @Binding var row: FolderCompareMergeRow
+private struct FolderCompareEditableTextPane: View {
+    let title: String
+    let snapshot: FolderSnapshotEntry?
+    @Binding var text: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(lineReference)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(width: 90, alignment: .leading)
+        VStack(spacing: 0) {
+            HStack {
+                Text(L10n.string(title))
+                    .font(.subheadline.weight(.semibold))
 
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .top, spacing: 8) {
-                    lineBox(title: "L", text: row.leftLine)
-                    lineBox(title: "R", text: row.rightLine)
-                }
+                Spacer()
 
-                if row.choice == .custom {
-                    TextField(L10n.string("Merged Line"), text: $row.customText)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-                }
+                Text(snapshot?.url.absoluteString.removingPercentEncoding ?? "-")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            .frame(minWidth: 340, maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
 
-            if row.isDifferent {
-                Picker(L10n.string("Resolution"), selection: $row.choice) {
-                    ForEach(FolderCompareMergeChoice.allCases) { choice in
-                        Text(L10n.string(choice.titleKey)).tag(choice)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(width: 300)
-            } else {
-                Text(L10n.string("Same"))
+            Divider()
+
+            SyntaxHighlightedTextView(
+                text: $text,
+                fileExtension: snapshot?.url.pathExtension.lowercased() ?? ""
+            )
+        }
+    }
+}
+
+private struct FolderCompareDiffControlColumn: View {
+    let hunks: [FolderCompareDiffHunk]
+    let onCopyLeftToRight: (FolderCompareDiffHunk) -> Void
+    let onCopyRightToLeft: (FolderCompareDiffHunk) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text(L10n.string("Merge"))
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+
+            Divider()
+
+            if hunks.isEmpty {
+                Spacer()
+                Text(L10n.string("No text differences."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .frame(width: 300, alignment: .leading)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 8)
+                Spacer()
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(hunks) { hunk in
+                            VStack(spacing: 6) {
+                                Text(hunk.title)
+                                    .font(.caption.weight(.semibold))
+
+                                Text("L \(hunk.leftLineText) / R \(hunk.rightLineText)")
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.secondary)
+
+                                Button("<<") {
+                                    onCopyRightToLeft(hunk)
+                                }
+                                .help(L10n.string("Copy Right to Left"))
+
+                                Button(">>") {
+                                    onCopyLeftToRight(hunk)
+                                }
+                                .help(L10n.string("Copy Left to Right"))
+                            }
+                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
+                            .padding(8)
+                            .background(Color.accentColor.opacity(0.08))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                    }
+                    .padding(8)
+                }
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(row.isDifferent ? Color.yellow.opacity(0.10) : Color.clear)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+private struct SyntaxHighlightedTextView: NSViewRepresentable {
+    @Binding var text: String
+    let fileExtension: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
     }
 
-    private var lineReference: String {
-        let left = row.leftNumber.map(String.init) ?? "-"
-        let right = row.rightNumber.map(String.init) ?? "-"
-        return "L\(left) / R\(right)"
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = true
+        scrollView.autohidesScrollers = false
+        scrollView.borderType = .noBorder
+
+        let textView = NSTextView()
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.allowsUndo = true
+        textView.usesFindPanel = true
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.backgroundColor = .textBackgroundColor
+        textView.textColor = .textColor
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = true
+        textView.textContainer?.containerSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.textContainer?.widthTracksTextView = false
+        textView.string = text
+        textView.delegate = context.coordinator
+        scrollView.documentView = textView
+        context.coordinator.applyHighlighting(to: textView)
+        return scrollView
     }
 
-    private func lineBox(title: String, text: String?) -> some View {
-        HStack(alignment: .top, spacing: 6) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.parent = self
 
-            Text(text ?? "-")
-                .font(.system(size: 12, design: .monospaced))
-                .textSelection(.enabled)
-                .lineLimit(3)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+        guard let textView = scrollView.documentView as? NSTextView else {
+            return
         }
-        .padding(6)
-        .background(Color(nsColor: .textBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
+
+        if textView.string != text {
+            textView.string = text
+        }
+
+        context.coordinator.applyHighlighting(to: textView)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: SyntaxHighlightedTextView
+        private var isApplyingHighlighting = false
+
+        init(_ parent: SyntaxHighlightedTextView) {
+            self.parent = parent
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else {
+                return
+            }
+
+            parent.text = textView.string
+            applyHighlighting(to: textView)
+        }
+
+        func applyHighlighting(to textView: NSTextView) {
+            guard !isApplyingHighlighting else {
+                return
+            }
+
+            isApplyingHighlighting = true
+            defer {
+                isApplyingHighlighting = false
+            }
+
+            let selectedRanges = textView.selectedRanges
+            FolderCompareSyntaxHighlighter.apply(
+                to: textView.textStorage,
+                text: textView.string,
+                fileExtension: parent.fileExtension
+            )
+            textView.selectedRanges = selectedRanges
+        }
+    }
+}
+
+@MainActor
+private enum FolderCompareSyntaxHighlighter {
+    static func apply(to textStorage: NSTextStorage?, text: String, fileExtension: String) {
+        guard let textStorage else {
+            return
+        }
+
+        let fullRange = NSRange(location: 0, length: (text as NSString).length)
+        textStorage.beginEditing()
+        textStorage.setAttributes(baseAttributes, range: fullRange)
+
+        guard !text.isEmpty else {
+            textStorage.endEditing()
+            return
+        }
+
+        let language = HighlightLanguage(fileExtension: fileExtension)
+        applyPatterns(language.patterns, to: textStorage, text: text, fullRange: fullRange)
+        textStorage.endEditing()
+    }
+
+    private static var baseAttributes: [NSAttributedString.Key: Any] {
+        [
+            .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+            .foregroundColor: NSColor.textColor
+        ]
+    }
+
+    private static func applyPatterns(
+        _ patterns: [HighlightPattern],
+        to textStorage: NSTextStorage,
+        text: String,
+        fullRange: NSRange
+    ) {
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern.pattern, options: pattern.options) else {
+                continue
+            }
+
+            regex.enumerateMatches(in: text, options: [], range: fullRange) { match, _, _ in
+                guard let match else {
+                    return
+                }
+
+                textStorage.addAttribute(.foregroundColor, value: pattern.color, range: match.range)
+                if let font = pattern.font {
+                    textStorage.addAttribute(.font, value: font, range: match.range)
+                }
+            }
+        }
+    }
+
+    private struct HighlightPattern {
+        let pattern: String
+        let color: NSColor
+        let options: NSRegularExpression.Options
+        let font: NSFont?
+
+        init(
+            _ pattern: String,
+            color: NSColor,
+            options: NSRegularExpression.Options = [],
+            font: NSFont? = nil
+        ) {
+            self.pattern = pattern
+            self.color = color
+            self.options = options
+            self.font = font
+        }
+    }
+
+    private enum HighlightLanguage {
+        case cFamily
+        case swift
+        case python
+        case shell
+        case sql
+        case markup
+        case css
+        case json
+        case yaml
+        case markdown
+        case plain
+
+        init(fileExtension: String) {
+            switch fileExtension {
+            case "js", "jsx", "ts", "tsx", "java", "cs", "c", "h", "cpp", "cc", "cxx", "hpp", "hxx":
+                self = .cFamily
+            case "swift":
+                self = .swift
+            case "py", "rb":
+                self = .python
+            case "sh", "zsh", "bash":
+                self = .shell
+            case "sql":
+                self = .sql
+            case "html", "xml":
+                self = .markup
+            case "css", "scss", "sass":
+                self = .css
+            case "json", "jsonc":
+                self = .json
+            case "yaml", "yml", "toml", "ini":
+                self = .yaml
+            case "md", "markdown":
+                self = .markdown
+            default:
+                self = .plain
+            }
+        }
+
+        @MainActor
+        var patterns: [HighlightPattern] {
+            switch self {
+            case .cFamily:
+                return cFamilyPatterns
+            case .swift:
+                return swiftPatterns
+            case .python:
+                return pythonPatterns
+            case .shell:
+                return shellPatterns
+            case .sql:
+                return sqlPatterns
+            case .markup:
+                return markupPatterns
+            case .css:
+                return cssPatterns
+            case .json:
+                return jsonPatterns
+            case .yaml:
+                return yamlPatterns
+            case .markdown:
+                return markdownPatterns
+            case .plain:
+                return []
+            }
+        }
+    }
+
+    private static let keywordColor = NSColor.systemPurple
+    private static let stringColor = NSColor.systemGreen
+    private static let commentColor = NSColor.secondaryLabelColor
+    private static let numberColor = NSColor.systemOrange
+    private static let typeColor = NSColor.systemTeal
+    private static let attributeColor = NSColor.systemBlue
+    private static let boldFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
+
+    private static var cFamilyPatterns: [HighlightPattern] {
+        [
+            blockCommentPattern,
+            lineCommentPattern("//"),
+            quotedStringPattern,
+            numberPattern,
+            keywordPattern([
+                "abstract", "as", "async", "await", "break", "case", "catch", "class", "const", "continue",
+                "default", "delegate", "delete", "do", "else", "enum", "event", "export", "extends", "false",
+                "finally", "for", "foreach", "from", "function", "get", "if", "implements", "import", "in",
+                "instanceof", "interface", "let", "namespace", "new", "null", "override", "package", "private",
+                "protected", "public", "readonly", "return", "set", "static", "struct", "super", "switch",
+                "this", "throw", "throws", "true", "try", "typeof", "using", "var", "virtual", "void", "while",
+                "yield"
+            ]),
+            keywordPattern([
+                "Array", "Boolean", "Date", "Double", "Error", "Float", "Int", "Integer", "List", "Map",
+                "Number", "Object", "Promise", "Record", "Set", "String", "boolean", "char", "double",
+                "float", "int", "long", "short", "string"
+            ], color: typeColor)
+        ]
+    }
+
+    private static var swiftPatterns: [HighlightPattern] {
+        [
+            blockCommentPattern,
+            lineCommentPattern("//"),
+            quotedStringPattern,
+            numberPattern,
+            keywordPattern([
+                "actor", "as", "associatedtype", "async", "await", "break", "case", "catch", "class",
+                "continue", "defer", "do", "else", "enum", "extension", "false", "for", "func", "guard",
+                "if", "import", "in", "init", "let", "nil", "private", "protocol", "public", "return",
+                "self", "static", "struct", "switch", "throw", "throws", "true", "try", "typealias", "var",
+                "where", "while"
+            ]),
+            keywordPattern(["Any", "Array", "Bool", "Data", "Date", "Dictionary", "Double", "Error", "Float", "Int", "Set", "String", "URL"], color: typeColor)
+        ]
+    }
+
+    private static var pythonPatterns: [HighlightPattern] {
+        [
+            lineCommentPattern("#"),
+            quotedStringPattern,
+            numberPattern,
+            keywordPattern([
+                "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del",
+                "elif", "else", "except", "False", "finally", "for", "from", "global", "if", "import",
+                "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True",
+                "try", "while", "with", "yield"
+            ])
+        ]
+    }
+
+    private static var shellPatterns: [HighlightPattern] {
+        [
+            lineCommentPattern("#"),
+            quotedStringPattern,
+            numberPattern,
+            keywordPattern(["case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in", "then", "until", "while"])
+        ]
+    }
+
+    private static var sqlPatterns: [HighlightPattern] {
+        [
+            lineCommentPattern("--"),
+            HighlightPattern(#"/\*[\s\S]*?\*/"#, color: commentColor),
+            quotedStringPattern,
+            numberPattern,
+            keywordPattern([
+                "ADD", "ALTER", "AND", "AS", "ASC", "BETWEEN", "BY", "CASE", "CREATE", "DELETE", "DESC",
+                "DISTINCT", "DROP", "ELSE", "END", "EXISTS", "FROM", "GROUP", "HAVING", "IN", "INDEX",
+                "INNER", "INSERT", "INTO", "IS", "JOIN", "LEFT", "LIKE", "LIMIT", "NOT", "NULL", "ON",
+                "OR", "ORDER", "OUTER", "RIGHT", "SELECT", "SET", "TABLE", "THEN", "UNION", "UPDATE",
+                "VALUES", "WHEN", "WHERE"
+            ], options: [.caseInsensitive])
+        ]
+    }
+
+    private static var markupPatterns: [HighlightPattern] {
+        [
+            HighlightPattern(#"<!--[\s\S]*?-->"#, color: commentColor),
+            HighlightPattern(#"</?[\w:-]+"#, color: keywordColor),
+            HighlightPattern(#"\s[\w:-]+(?=\=)"#, color: attributeColor),
+            quotedStringPattern
+        ]
+    }
+
+    private static var cssPatterns: [HighlightPattern] {
+        [
+            blockCommentPattern,
+            quotedStringPattern,
+            HighlightPattern(#"#[0-9a-fA-F]{3,8}\b"#, color: numberColor),
+            HighlightPattern(#"[\w-]+(?=\s*:)"#, color: attributeColor),
+            keywordPattern(["auto", "block", "flex", "grid", "inherit", "inline", "none", "relative", "absolute", "fixed", "sticky"], color: keywordColor)
+        ]
+    }
+
+    private static var jsonPatterns: [HighlightPattern] {
+        [
+            HighlightPattern(#""(?:\\.|[^"\\])*"(?=\s*:)"#, color: attributeColor),
+            quotedStringPattern,
+            numberPattern,
+            keywordPattern(["true", "false", "null"])
+        ]
+    }
+
+    private static var yamlPatterns: [HighlightPattern] {
+        [
+            lineCommentPattern("#"),
+            HighlightPattern(#"(?m)^\s*[\w.-]+(?=\s*:)"#, color: attributeColor),
+            quotedStringPattern,
+            numberPattern,
+            keywordPattern(["true", "false", "null", "yes", "no", "on", "off"])
+        ]
+    }
+
+    private static var markdownPatterns: [HighlightPattern] {
+        [
+            HighlightPattern(#"(?m)^#{1,6}\s.*$"#, color: keywordColor, font: boldFont),
+            HighlightPattern(#"`[^`]*`"#, color: stringColor),
+            HighlightPattern(#"(?m)^\s*[-*+]\s+"#, color: attributeColor),
+            HighlightPattern(#"\[[^\]]+\]\([^)]+\)"#, color: attributeColor)
+        ]
+    }
+
+    private static var blockCommentPattern: HighlightPattern {
+        HighlightPattern(#"/\*[\s\S]*?\*/"#, color: commentColor)
+    }
+
+    private static func lineCommentPattern(_ prefix: String) -> HighlightPattern {
+        HighlightPattern("(?m)\(NSRegularExpression.escapedPattern(for: prefix)).*$", color: commentColor)
+    }
+
+    private static var quotedStringPattern: HighlightPattern {
+        HighlightPattern(#""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'"#, color: stringColor)
+    }
+
+    private static var numberPattern: HighlightPattern {
+        HighlightPattern(#"\b\d+(?:\.\d+)?\b"#, color: numberColor)
+    }
+
+    private static func keywordPattern(
+        _ words: [String],
+        color: NSColor = keywordColor,
+        options: NSRegularExpression.Options = []
+    ) -> HighlightPattern {
+        let escaped = words.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
+        return HighlightPattern(#"\b("# + escaped + #")\b"#, color: color, options: options, font: boldFont)
     }
 }
 
@@ -2148,32 +2724,23 @@ private enum FolderCompareLineMerger {
         case rightOnly(Int)
     }
 
-    static func rows(leftText: String?, rightText: String?) -> [FolderCompareMergeRow] {
-        guard leftText != nil || rightText != nil else {
-            return []
-        }
-
-        let leftLines = splitLines(leftText ?? "")
-        let rightLines = splitLines(rightText ?? "")
-
-        guard !leftLines.isEmpty || !rightLines.isEmpty else {
-            return []
-        }
-
+    static func hunks(leftText: String, rightText: String) -> [FolderCompareDiffHunk] {
+        let leftLines = lines(in: leftText)
+        let rightLines = lines(in: rightText)
         let operations = makeOperations(leftLines: leftLines, rightLines: rightLines)
-        return foldedRows(from: operations, leftLines: leftLines, rightLines: rightLines)
+        return diffHunks(from: operations)
     }
 
-    static func mergedText(from rows: [FolderCompareMergeRow]) -> String {
-        rows.compactMap(\.outputLine).joined(separator: "\n")
-    }
-
-    private static func splitLines(_ text: String) -> [String] {
-        guard !text.isEmpty else {
-            return []
-        }
-
+    static func lines(in text: String) -> [String] {
         return text.components(separatedBy: "\n")
+    }
+
+    static func replacingLines(in text: String, range: Range<Int>, with replacement: [String]) -> String {
+        var values = lines(in: text)
+        let safeLowerBound = min(max(range.lowerBound, 0), values.count)
+        let safeUpperBound = min(max(range.upperBound, safeLowerBound), values.count)
+        values.replaceSubrange(safeLowerBound..<safeUpperBound, with: replacement)
+        return values.joined(separator: "\n")
     }
 
     private static func makeOperations(leftLines: [String], rightLines: [String]) -> [Operation] {
@@ -2254,57 +2821,37 @@ private enum FolderCompareLineMerger {
         return operations
     }
 
-    private static func foldedRows(
-        from operations: [Operation],
-        leftLines: [String],
-        rightLines: [String]
-    ) -> [FolderCompareMergeRow] {
-        var rows: [FolderCompareMergeRow] = []
+    private static func diffHunks(from operations: [Operation]) -> [FolderCompareDiffHunk] {
+        var hunks: [FolderCompareDiffHunk] = []
         var index = 0
 
         while index < operations.count {
             switch operations[index] {
-            case .same(let leftIndex, let rightIndex):
-                rows.append(
-                    row(
-                        leftIndex: leftIndex,
-                        rightIndex: rightIndex,
-                        leftLines: leftLines,
-                        rightLines: rightLines,
-                        forceDifference: false
-                    )
-                )
+            case .same:
                 index += 1
             case .leftOnly, .rightOnly:
-                let (leftIndexes, rightIndexes, nextIndex) = collectDifferenceRun(
+                let (leftRange, rightRange, nextIndex) = collectDifferenceRun(
                     from: operations,
                     startIndex: index
                 )
-                let maxCount = max(leftIndexes.count, rightIndexes.count)
-
-                for offset in 0..<maxCount {
-                    rows.append(
-                        row(
-                            leftIndex: offset < leftIndexes.count ? leftIndexes[offset] : nil,
-                            rightIndex: offset < rightIndexes.count ? rightIndexes[offset] : nil,
-                            leftLines: leftLines,
-                            rightLines: rightLines,
-                            forceDifference: true
-                        )
+                hunks.append(
+                    FolderCompareDiffHunk(
+                        index: hunks.count + 1,
+                        leftRange: leftRange,
+                        rightRange: rightRange
                     )
-                }
-
+                )
                 index = nextIndex
             }
         }
 
-        return rows
+        return hunks
     }
 
     private static func collectDifferenceRun(
         from operations: [Operation],
         startIndex: Int
-    ) -> (leftIndexes: [Int], rightIndexes: [Int], nextIndex: Int) {
+    ) -> (leftRange: Range<Int>, rightRange: Range<Int>, nextIndex: Int) {
         var leftIndexes: [Int] = []
         var rightIndexes: [Int] = []
         var index = startIndex
@@ -2316,44 +2863,84 @@ private enum FolderCompareLineMerger {
             case .rightOnly(let rightIndex):
                 rightIndexes.append(rightIndex)
             case .same:
-                return (leftIndexes, rightIndexes, index)
+                return (
+                    range(
+                        from: leftIndexes,
+                        operations: operations,
+                        startIndex: startIndex,
+                        nextIndex: index,
+                        side: .left
+                    ),
+                    range(
+                        from: rightIndexes,
+                        operations: operations,
+                        startIndex: startIndex,
+                        nextIndex: index,
+                        side: .right
+                    ),
+                    index
+                )
             }
 
             index += 1
         }
 
-        return (leftIndexes, rightIndexes, index)
+        return (
+            range(from: leftIndexes, operations: operations, startIndex: startIndex, nextIndex: index, side: .left),
+            range(from: rightIndexes, operations: operations, startIndex: startIndex, nextIndex: index, side: .right),
+            index
+        )
     }
 
-    private static func row(
-        leftIndex: Int?,
-        rightIndex: Int?,
-        leftLines: [String],
-        rightLines: [String],
-        forceDifference: Bool
-    ) -> FolderCompareMergeRow {
-        let leftLine = leftIndex.map { leftLines[$0] }
-        let rightLine = rightIndex.map { rightLines[$0] }
-        let isDifferent = forceDifference || leftLine != rightLine
-        let defaultChoice: FolderCompareMergeChoice
+    private enum DiffSide {
+        case left
+        case right
+    }
 
-        if !isDifferent {
-            defaultChoice = .left
-        } else if leftLine != nil {
-            defaultChoice = .left
-        } else {
-            defaultChoice = .right
+    private static func range(
+        from indexes: [Int],
+        operations: [Operation],
+        startIndex: Int,
+        nextIndex: Int,
+        side: DiffSide
+    ) -> Range<Int> {
+        guard let first = indexes.first,
+              let last = indexes.last else {
+            let insertionIndex = insertionPoint(
+                operations: operations,
+                startIndex: startIndex,
+                nextIndex: nextIndex,
+                side: side
+            )
+            return insertionIndex..<insertionIndex
         }
 
-        return FolderCompareMergeRow(
-            leftNumber: leftIndex.map { $0 + 1 },
-            rightNumber: rightIndex.map { $0 + 1 },
-            leftLine: leftLine,
-            rightLine: rightLine,
-            isDifferent: isDifferent,
-            choice: defaultChoice,
-            customText: leftLine ?? rightLine ?? ""
-        )
+        return first..<(last + 1)
+    }
+
+    private static func insertionPoint(
+        operations: [Operation],
+        startIndex: Int,
+        nextIndex: Int,
+        side: DiffSide
+    ) -> Int {
+        if nextIndex < operations.count,
+           case .same(let leftIndex, let rightIndex) = operations[nextIndex] {
+            return side == .left ? leftIndex : rightIndex
+        }
+
+        if startIndex > 0 {
+            switch operations[startIndex - 1] {
+            case .same(let leftIndex, let rightIndex):
+                return (side == .left ? leftIndex : rightIndex) + 1
+            case .leftOnly(let leftIndex):
+                return side == .left ? leftIndex + 1 : 0
+            case .rightOnly(let rightIndex):
+                return side == .right ? rightIndex + 1 : 0
+            }
+        }
+
+        return 0
     }
 }
 
@@ -2553,5 +3140,23 @@ private extension String {
         }
 
         return hasSuffix("/") ? "\(self)\(trimmedComponent)" : "\(self)/\(trimmedComponent)"
+    }
+
+    func isDescendant(of parentPath: String) -> Bool {
+        let normalizedParent = parentPath.trimmingTrailingSlash
+
+        guard !normalizedParent.isEmpty else {
+            return !isEmpty
+        }
+
+        return hasPrefix("\(normalizedParent)/")
+    }
+}
+
+private extension Array {
+    subscript(safe range: Range<Int>) -> ArraySlice<Element> {
+        let lowerBound = Swift.max(0, Swift.min(range.lowerBound, count))
+        let upperBound = Swift.max(lowerBound, Swift.min(range.upperBound, count))
+        return self[lowerBound..<upperBound]
     }
 }

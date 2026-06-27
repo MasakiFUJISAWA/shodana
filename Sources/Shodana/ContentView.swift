@@ -90,7 +90,15 @@ struct ContentView: View {
         .onChange(of: browser.currentURL) { _, newURL in
             updateSelectedTab(with: newURL)
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
+            guard notification.object as? NSWindow === hostingWindow else {
+                return
+            }
+
+            persistTabs()
+        }
         .onDisappear {
+            persistTabs()
             removePasteboardShortcutMonitor()
         }
         .sheet(isPresented: $isFolderCompareSyncPresented) {
@@ -128,9 +136,24 @@ struct ContentView: View {
             return
         }
 
-        let tab = BrowserTab(url: browser.currentURL)
-        tabs = [tab]
-        selectedTabID = tab.id
+        if let restoredState = BrowserTabSessionStore.restoreOnceForLaunch() {
+            tabs = restoredState.tabs
+            selectedTabID = restoredState.selectedTabID
+
+            if let selectedTab = restoredState.selectedTab {
+                isSwitchingTabs = true
+                browser.navigate(to: selectedTab.url, recordHistory: false)
+
+                DispatchQueue.main.async {
+                    isSwitchingTabs = false
+                }
+            }
+        } else {
+            let tab = BrowserTab(url: browser.currentURL)
+            tabs = [tab]
+            selectedTabID = tab.id
+            persistTabs()
+        }
     }
 
     private func updateSelectedTab(with url: URL) {
@@ -141,6 +164,7 @@ struct ContentView: View {
         }
 
         tabs[index].url = url
+        persistTabs()
     }
 
     private func selectTab(_ tab: BrowserTab) {
@@ -150,6 +174,7 @@ struct ContentView: View {
 
         isSwitchingTabs = true
         selectedTabID = tab.id
+        persistTabs()
         browser.navigate(to: tab.url)
 
         DispatchQueue.main.async {
@@ -161,6 +186,7 @@ struct ContentView: View {
         let tab = BrowserTab(url: browser.currentURL)
         tabs.append(tab)
         selectedTabID = tab.id
+        persistTabs()
     }
 
     private func closeTab(_ tab: BrowserTab) {
@@ -175,7 +201,13 @@ struct ContentView: View {
         if wasSelected {
             let nextIndex = min(index, tabs.count - 1)
             selectTab(tabs[nextIndex])
+        } else {
+            persistTabs()
         }
+    }
+
+    private func persistTabs() {
+        BrowserTabSessionStore.save(tabs: tabs, selectedTabID: selectedTabID)
     }
 
     private func toggleDualPane() {
@@ -310,6 +342,120 @@ struct ContentView: View {
         }
 
         return !browser.isTextInputActive
+    }
+}
+
+@MainActor
+enum BrowserTabSessionStore {
+    struct RestoredState {
+        let tabs: [BrowserTab]
+        let selectedTabID: UUID?
+
+        var selectedTab: BrowserTab? {
+            guard let selectedTabID else {
+                return tabs.first
+            }
+
+            return tabs.first { $0.id == selectedTabID } ?? tabs.first
+        }
+    }
+
+    private struct StoredSession: Codable {
+        let urls: [String]
+        let selectedIndex: Int
+    }
+
+    private static let defaultsKey = "Shodana.lastWindowTabs"
+    private static let legacyDefaultsKeys = ["Mihako.lastWindowTabs"]
+    private static var didAttemptLaunchRestore = false
+
+    static func restoreOnceForLaunch() -> RestoredState? {
+        guard !didAttemptLaunchRestore else {
+            return nil
+        }
+
+        didAttemptLaunchRestore = true
+
+        guard let data = AppDefaults.migratedData(forKey: defaultsKey, legacyKeys: legacyDefaultsKeys),
+              let session = try? JSONDecoder().decode(StoredSession.self, from: data) else {
+            return nil
+        }
+
+        let urls = session.urls.compactMap(restorableURL)
+        guard !urls.isEmpty else {
+            return nil
+        }
+
+        let tabs = urls.map(BrowserTab.init(url:))
+        let selectedIndex = min(max(session.selectedIndex, 0), tabs.count - 1)
+
+        return RestoredState(
+            tabs: tabs,
+            selectedTabID: tabs[selectedIndex].id
+        )
+    }
+
+    static func save(tabs: [BrowserTab], selectedTabID: UUID?) {
+        guard !tabs.isEmpty else {
+            return
+        }
+
+        let selectedIndex = tabs.firstIndex { $0.id == selectedTabID } ?? 0
+        let session = StoredSession(
+            urls: tabs.map { storageString(for: $0.url) },
+            selectedIndex: selectedIndex
+        )
+
+        guard let data = try? JSONEncoder().encode(session) else {
+            return
+        }
+
+        AppDefaults.setCurrentAndRemoveLegacy(
+            data,
+            forKey: defaultsKey,
+            legacyKeys: legacyDefaultsKeys
+        )
+    }
+
+    private static func storageString(for url: URL) -> String {
+        if url.isFileURL {
+            return url.standardizedFileURL.absoluteString
+        }
+
+        return url.absoluteString
+    }
+
+    private static func restorableURL(from value: String) -> URL? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+
+        let url: URL?
+
+        if trimmed.contains("://") {
+            url = URL(string: trimmed)
+        } else {
+            url = URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath)
+        }
+
+        guard let url else {
+            return nil
+        }
+
+        if SFTPClient.isSFTPURL(url) || S3Client.isS3URL(url) {
+            return url
+        }
+
+        let fileURL = url.standardizedFileURL
+        var isDirectory: ObjCBool = false
+
+        guard FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return nil
+        }
+
+        return fileURL
     }
 }
 
