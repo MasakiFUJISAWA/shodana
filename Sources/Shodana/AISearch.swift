@@ -30,11 +30,28 @@ struct AIStorageScope: Identifiable, Codable, Hashable, Sendable {
     var id: UUID
     var title: String
     var path: String
+    var keepAcrossAIModeChanges: Bool
 
-    init(id: UUID = UUID(), title: String, path: String) {
+    init(id: UUID = UUID(), title: String, path: String, keepAcrossAIModeChanges: Bool = true) {
         self.id = id
         self.title = title
         self.path = path
+        self.keepAcrossAIModeChanges = keepAcrossAIModeChanges
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case path
+        case keepAcrossAIModeChanges
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        path = try container.decode(String.self, forKey: .path)
+        keepAcrossAIModeChanges = try container.decodeIfPresent(Bool.self, forKey: .keepAcrossAIModeChanges) ?? true
     }
 
     var url: URL {
@@ -50,7 +67,8 @@ struct AIStorageScope: Identifiable, Codable, Hashable, Sendable {
         return AIStorageScope(
             id: id,
             title: title.trimmingCharacters(in: .whitespacesAndNewlines).aiNilIfEmpty ?? fallbackTitle,
-            path: normalizedURL.path
+            path: normalizedURL.path,
+            keepAcrossAIModeChanges: keepAcrossAIModeChanges
         )
     }
 }
@@ -867,12 +885,21 @@ enum AISearchPromptBuilder {
         settings: AISearchSettings
     ) -> [AIChatClient.ChatMessage] {
         let systemPrompt = """
-        You are Shodana's AI search assistant. Answer using only the file context explicitly provided by Shodana. If the user asks where a file or code is located, answer with the exact full path shown in the context. Never invent placeholder paths such as /path/to/your/project, /your/project, or <project-root>. If the exact full path is not present in the context, say that the full path is not available. Ignore placeholder paths that may appear in earlier assistant messages. Prefer concise, actionable engineering guidance.
+        You are Shodana's AI search assistant. Answer the latest user question directly using only the file context explicitly provided by Shodana.
+
+        If the user asks where a file or code is located, answer with the exact full path shown in the context. Never invent placeholder paths such as /path/to/your/project, /your/project, or <project-root>. If the exact full path is not present in the context, say that the full path is not available.
+
+        If the user asks what an app, folder, file, or code does, synthesize an explanation from the disclosed snippets. Do not answer only by listing paths or saying where information may be found. Use paths only as supporting evidence.
+
+        Use conversation history to resolve references such as "the second path", "that folder", or "the previous result", but do not repeat a previous answer unless the latest question asks for it. If the user only says thanks, praise, or a short acknowledgement, respond conversationally and do not repeat the previous file-location answer. Ignore placeholder paths that may appear in earlier assistant messages. Prefer concise, actionable engineering guidance.
         """
-        let context = contextText(from: contextResult, limit: settings.normalized.maxContextCharacters)
+        let context = contextText(
+            from: contextResult,
+            limit: settings.normalized.maxContextCharacters,
+            question: question
+        )
         let recentHistory = previousMessages
             .suffix(8)
-            .filter { $0.role == .user }
             .map {
                 AIChatClient.ChatMessage(
                     role: $0.role.rawValue,
@@ -880,7 +907,7 @@ enum AISearchPromptBuilder {
                 )
             }
         let currentQuestion = """
-        User question:
+        Latest user question. Answer this question, not an earlier one:
         \(question)
 
         Files disclosed to AI for this turn:
@@ -892,7 +919,7 @@ enum AISearchPromptBuilder {
             + [AIChatClient.ChatMessage(role: "user", content: currentQuestion)]
     }
 
-    static func contextText(from contextResult: AIContextBuildResult, limit: Int) -> String {
+    static func contextText(from contextResult: AIContextBuildResult, limit: Int, question: String) -> String {
         let files = contextResult.files
 
         guard !files.isEmpty || !contextResult.matchingPaths.isEmpty else {
@@ -901,8 +928,9 @@ enum AISearchPromptBuilder {
 
         var remainingCharacters = limit
         var chunks: [String] = []
+        let shouldIncludePathIndex = shouldIncludePathIndex(for: question) || files.isEmpty
 
-        if !contextResult.matchingPaths.isEmpty {
+        if shouldIncludePathIndex, !contextResult.matchingPaths.isEmpty {
             let pathIndex = contextResult.matchingPaths
                 .map { "- \($0)" }
                 .joined(separator: "\n")
@@ -941,5 +969,23 @@ enum AISearchPromptBuilder {
         }
 
         return chunks.joined(separator: "\n")
+    }
+
+    private static func shouldIncludePathIndex(for question: String) -> Bool {
+        let lowercasedQuestion = question.lowercased()
+        let explanationTokens = [
+            "どんな", "働き", "概要", "説明", "教えて", "おしえて", "何を", "なにを",
+            "どういう", "どのよう", "what", "explain", "describe", "summary", "overview"
+        ]
+
+        if explanationTokens.contains(where: { lowercasedQuestion.contains($0) }) {
+            return false
+        }
+
+        let locationTokens = [
+            "どこ", "場所", "パス", "フルパス", "所在", "開く", "path", "where", "location"
+        ]
+
+        return locationTokens.contains { lowercasedQuestion.contains($0) }
     }
 }

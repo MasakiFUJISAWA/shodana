@@ -1137,8 +1137,22 @@ struct AISearchSettingsSheet: View {
                             selectedScopeID = scope.id
                         } label: {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(scope.title)
-                                    .lineLimit(1)
+                                HStack(spacing: 6) {
+                                    Text(scope.title)
+                                        .lineLimit(1)
+
+                                    if !scope.keepAcrossAIModeChanges {
+                                        Text(L10n.string("Temporary"))
+                                            .font(.caption2.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                            .padding(.horizontal, 5)
+                                            .padding(.vertical, 1)
+                                            .background(
+                                                Capsule()
+                                                    .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.25))
+                                            )
+                                    }
+                                }
 
                                 Text(scope.path)
                                     .font(.caption)
@@ -1196,6 +1210,15 @@ struct AISearchSettingsSheet: View {
                     Button(L10n.string("Choose Folder...")) {
                         chooseFolder(for: selectedScopeIndex)
                     }
+
+                    Toggle(
+                        L10n.string("Keep this path when AI mode changes"),
+                        isOn: $settings.scopes[selectedScopeIndex].keepAcrossAIModeChanges
+                    )
+
+                    Text(L10n.string("Unchecked paths are temporary and are cleared when another location is opened or AI mode is re-entered."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             } else {
                 Text(L10n.string("Add folders that may be disclosed to AI."))
@@ -1699,6 +1722,8 @@ struct AIContextFileRow: View {
 }
 
 struct AIChatMessageBubble: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
     let message: AIChatMessage
 
     private var isUserMessage: Bool {
@@ -1731,11 +1756,16 @@ struct AIChatMessageBubble: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: isUserMessage ? .trailing : .leading)
 
-            Text(message.content)
-                .textSelection(.enabled)
-                .font(.system(size: 13))
-                .multilineTextAlignment(isUserMessage ? .trailing : .leading)
-                .frame(maxWidth: .infinity, alignment: isUserMessage ? .trailing : .leading)
+            if isUserMessage {
+                Text(message.content)
+                    .textSelection(.enabled)
+                    .font(.system(size: 13))
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            } else {
+                AIChatMessageContent(content: message.content)
+                    .environmentObject(browser)
+            }
         }
         .padding(10)
         .background(
@@ -1749,6 +1779,175 @@ struct AIChatMessageBubble: View {
                     lineWidth: 1
                 )
         )
+    }
+}
+
+private struct AIChatMessageContent: View {
+    let content: String
+
+    private var lines: [String] {
+        content.components(separatedBy: .newlines)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                AIChatMessageLine(line: line)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct AIChatMessageLine: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    let line: String
+
+    var body: some View {
+        if let link = AIChatPathLink.first(in: line) {
+            VStack(alignment: .leading, spacing: 3) {
+                if !link.prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(link.prefix)
+                        .textSelection(.enabled)
+                        .font(.system(size: 13))
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                Button {
+                    browser.openAIChatPath(link.path)
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.up.forward.app")
+                            .font(.system(size: 11, weight: .semibold))
+
+                        Text(link.path)
+                            .font(.system(size: 12, design: .monospaced))
+                            .underline()
+                            .lineLimit(nil)
+                            .multilineTextAlignment(.leading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.link)
+                .contextMenu {
+                    Button(L10n.string("Copy Path")) {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(link.path, forType: .string)
+                    }
+                }
+                .help(L10n.string("Open"))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Text(line.isEmpty ? " " : line)
+                .textSelection(.enabled)
+                .font(.system(size: 13))
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct AIChatPathLink {
+    let prefix: String
+    let path: String
+
+    static func first(in line: String) -> AIChatPathLink? {
+        if let fileSchemeRange = line.range(of: "file://") {
+            let candidate = String(line[fileSchemeRange.lowerBound...])
+
+            guard let path = cleanedPath(from: candidate) else {
+                return nil
+            }
+
+            return AIChatPathLink(
+                prefix: String(line[..<fileSchemeRange.lowerBound]),
+                path: path
+            )
+        }
+
+        guard let slashIndex = line.firstIndex(of: "/") else {
+            return nil
+        }
+
+        let candidate = String(line[slashIndex...])
+
+        guard let path = cleanedPath(from: candidate) else {
+            return nil
+        }
+
+        return AIChatPathLink(
+            prefix: String(line[..<slashIndex]),
+            path: path
+        )
+    }
+
+    private static func cleanedPath(from candidate: String) -> String? {
+        var value = candidate
+
+        if let relativeRange = value.range(of: " (relative:") {
+            value = String(value[..<relativeRange.lowerBound])
+        }
+
+        value = value.trimmingCharacters(in: pathTrimCharacters)
+
+        if value.hasPrefix("file://"),
+           let url = URL(string: value),
+           url.isFileURL {
+            value = url.path
+        }
+
+        value = value.trimmingCharacters(in: pathTrimCharacters)
+
+        guard isLinkableLocalPath(value) else {
+            return nil
+        }
+
+        if fileExists(value) {
+            return value
+        }
+
+        var shortened = value
+        while let lastSpace = shortened.lastIndex(of: " ") {
+            shortened = String(shortened[..<lastSpace])
+                .trimmingCharacters(in: pathTrimCharacters)
+
+            if fileExists(shortened) {
+                return shortened
+            }
+        }
+
+        guard value.hasPrefix("/Users/") || value.hasPrefix("/Volumes/") || value.hasPrefix("/Applications/") else {
+            return nil
+        }
+
+        return value
+    }
+
+    private static func fileExists(_ path: String) -> Bool {
+        guard !path.isEmpty else {
+            return false
+        }
+
+        return FileManager.default.fileExists(atPath: path)
+    }
+
+    private static func isLinkableLocalPath(_ path: String) -> Bool {
+        path.hasPrefix("/Users/")
+            || path.hasPrefix("/Volumes/")
+            || path.hasPrefix("/Applications/")
+            || path.hasPrefix("/System/Applications/")
+            || path.hasPrefix("/private/")
+            || path.hasPrefix("/tmp/")
+            || path.hasPrefix("/var/")
+    }
+
+    private static var pathTrimCharacters: CharacterSet {
+        CharacterSet.whitespacesAndNewlines
+            .union(CharacterSet(charactersIn: "`'\".,。、:：;；)）]】>"))
     }
 }
 
@@ -3639,12 +3838,12 @@ struct FileContextMenu: View {
         Divider()
 
         Button(L10n.string("Copy")) {
-            browser.selectOnly(item.url)
+            browser.selectContextIfNeeded(item)
             browser.copySelection()
         }
 
         Button(L10n.string("Cut")) {
-            browser.selectOnly(item.url)
+            browser.selectContextIfNeeded(item)
             browser.cutSelection()
         }
 
@@ -3682,7 +3881,7 @@ struct FileContextMenu: View {
         Divider()
 
         Button(L10n.string("Move to Trash")) {
-            browser.selectOnly(item.url)
+            browser.selectContextIfNeeded(item)
             browser.trashSelection()
         }
     }

@@ -49,10 +49,22 @@ final class FileBrowserViewModel: ObservableObject {
                 isSearching = false
                 isAIThinking = false
                 wasSearchCancelled = false
+            } else if searchInteractionMode == .ai {
+                refreshAutomaticAIScope(for: currentURL)
             }
         }
     }
-    @Published var searchInteractionMode: SearchInteractionMode = .keyword
+    @Published var searchInteractionMode: SearchInteractionMode = .keyword {
+        didSet {
+            guard oldValue != searchInteractionMode else {
+                return
+            }
+
+            if contentMode == .search, searchInteractionMode == .ai {
+                refreshAutomaticAIScope(for: currentURL)
+            }
+        }
+    }
     @Published var searchText = ""
     @Published private(set) var searchResults: [FileItem] = []
     @Published private(set) var isSearching = false
@@ -849,6 +861,15 @@ final class FileBrowserViewModel: ObservableObject {
             return
         }
 
+        if let casualReply = Self.casualAIReply(for: question) {
+            hasPerformedSearch = true
+            isAIThinking = false
+            aiChatMessages.append(AIChatMessage(role: .user, content: question))
+            aiChatMessages.append(AIChatMessage(role: .assistant, content: casualReply))
+            searchText = ""
+            return
+        }
+
         guard let rootURL = searchRootURLFromAddress() else {
             isAIThinking = false
             hasPerformedSearch = false
@@ -862,6 +883,7 @@ final class FileBrowserViewModel: ObservableObject {
             return
         }
 
+        refreshAutomaticAIScope(for: rootURL)
         let scopeURLs = effectiveAIScopeURLs(for: rootURL)
 
         guard !scopeURLs.isEmpty else {
@@ -971,7 +993,10 @@ final class FileBrowserViewModel: ObservableObject {
         var settings = aiSearchSettings.normalized
         let path = rootURL.standardizedFileURL.path
 
-        guard !settings.scopes.contains(where: { $0.normalized.path == path }) else {
+        if let existingIndex = settings.scopes.firstIndex(where: { $0.normalized.path == path }) {
+            settings.scopes[existingIndex].keepAcrossAIModeChanges = true
+            aiSearchSettings = settings.normalized
+            AISearchSettingsStore.save(aiSearchSettings)
             return
         }
 
@@ -981,6 +1006,62 @@ final class FileBrowserViewModel: ObservableObject {
         settings.scopes.append(AIStorageScope(title: title, path: path))
         aiSearchSettings = settings.normalized
         AISearchSettingsStore.save(aiSearchSettings)
+    }
+
+    private func refreshAutomaticAIScope(for url: URL) {
+        var settings = aiSearchSettings.normalized
+        settings.scopes.removeAll { !$0.keepAcrossAIModeChanges }
+
+        if let scope = automaticAIScope(for: url) {
+            let scopePath = scope.path.trimmingTrailingSlash
+            let alreadyCovered = settings.scopes.contains {
+                $0.normalized.path.trimmingTrailingSlash == scopePath
+            }
+
+            if !alreadyCovered {
+                settings.scopes.append(scope)
+            }
+        }
+
+        aiSearchSettings = settings.normalized
+    }
+
+    private func clearTemporaryAIScopes(save: Bool) {
+        var settings = aiSearchSettings.normalized
+        let originalCount = settings.scopes.count
+        settings.scopes.removeAll { !$0.keepAcrossAIModeChanges }
+
+        guard settings.scopes.count != originalCount else {
+            return
+        }
+
+        aiSearchSettings = settings.normalized
+
+        if save {
+            AISearchSettingsStore.save(aiSearchSettings)
+        }
+    }
+
+    private func automaticAIScope(for url: URL) -> AIStorageScope? {
+        guard url.isFileURL else {
+            return nil
+        }
+
+        let normalizedURL = url.standardizedFileURL
+        var isDirectory: ObjCBool = false
+
+        guard fileManager.fileExists(atPath: normalizedURL.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return nil
+        }
+
+        return AIStorageScope(
+            title: fileManager.displayName(atPath: normalizedURL.path).nilIfEmpty
+                ?? normalizedURL.lastPathComponent.nilIfEmpty
+                ?? normalizedURL.path,
+            path: normalizedURL.path,
+            keepAcrossAIModeChanges: false
+        )
     }
 
     func clearAIConversation() {
@@ -994,6 +1075,23 @@ final class FileBrowserViewModel: ObservableObject {
 
     func openAIContextFile(_ file: AIContextFile) {
         openExternalDestination(file.url)
+    }
+
+    func openAIChatPath(_ path: String) {
+        let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedPath.isEmpty else {
+            return
+        }
+
+        if trimmedPath.hasPrefix("file://"),
+           let url = URL(string: trimmedPath),
+           url.isFileURL {
+            openExternalDestination(url)
+            return
+        }
+
+        openExternalDestination(URL(fileURLWithPath: trimmedPath))
     }
 
     private func effectiveAIScopeURLs(for rootURL: URL) -> [URL] {
@@ -1053,15 +1151,61 @@ final class FileBrowserViewModel: ObservableObject {
         currentQuestion: String,
         previousMessages: [AIChatMessage]
     ) -> String {
+        let shouldIncludeAssistantContext = needsConversationReferenceResolution(currentQuestion)
         let recentContext = previousMessages
             .suffix(8)
-            .filter { $0.role == .user }
+            .filter { message in
+                message.role == .user || (shouldIncludeAssistantContext && message.role == .assistant)
+            }
             .map(\.content)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
         return (recentContext + [currentQuestion])
             .joined(separator: "\n")
+    }
+
+    private nonisolated static func needsConversationReferenceResolution(_ question: String) -> Bool {
+        let lowercasedQuestion = question.lowercased()
+        let referenceTokens = [
+            "それ", "その", "この", "あれ", "前", "上記", "下記",
+            "1つ目", "１つ目", "一つ目", "ひとつ目",
+            "2つ目", "２つ目", "二つ目", "ふたつ目",
+            "3つ目", "３つ目", "三つ目", "みっつ目",
+            "first", "second", "third", "previous", "above", "that", "those"
+        ]
+
+        return referenceTokens.contains { lowercasedQuestion.contains($0) }
+    }
+
+    private nonisolated static func casualAIReply(for question: String) -> String? {
+        let normalized = question
+            .lowercased()
+            .unicodeScalars
+            .filter { scalar in
+                !CharacterSet.whitespacesAndNewlines.contains(scalar)
+                    && !CharacterSet.punctuationCharacters.contains(scalar)
+                    && !CharacterSet.symbols.contains(scalar)
+            }
+            .map(String.init)
+            .joined()
+
+        guard normalized.count <= 24 else {
+            return nil
+        }
+
+        let acknowledgements: Set<String> = [
+            "ありがとう", "ありがとうございます", "ありがと", "助かった", "助かりました",
+            "素晴らしい", "すばらしい", "いいね", "よいね", "良いね", "最高", "すごい",
+            "なるほど", "了解", "了解です", "ok", "okay", "thanks", "thankyou",
+            "great", "nice", "awesome", "perfect", "good"
+        ]
+
+        guard acknowledgements.contains(normalized) else {
+            return nil
+        }
+
+        return L10n.string("Glad it helped. Ask me anything else about these files when you need it.")
     }
 
     private static func aiContextSummaryText(_ contextResult: AIContextBuildResult) -> String {
@@ -1442,6 +1586,7 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     func navigate(to url: URL, recordHistory: Bool = true) {
+        let previousURL = currentURL
         contentMode = .folder
         searchTask?.cancel()
         isSearching = false
@@ -1476,6 +1621,10 @@ final class FileBrowserViewModel: ObservableObject {
         selectedIDs.removeAll()
         selectionAnchorURL = nil
         selectionFocusURL = nil
+
+        if previousURL != targetURL {
+            clearTemporaryAIScopes(save: true)
+        }
 
         if recordHistory {
             if historyIndex < history.count - 1 {
@@ -1547,11 +1696,16 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     private func navigateToSFTP(_ url: URL, recordHistory: Bool) {
+        let previousURL = currentURL
         currentURL = url
         addressText = displayString(for: url)
         selectedIDs.removeAll()
         selectionAnchorURL = nil
         selectionFocusURL = nil
+
+        if previousURL != url {
+            clearTemporaryAIScopes(save: true)
+        }
 
         if recordHistory {
             if historyIndex < history.count - 1 {
@@ -1568,11 +1722,16 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     private func navigateToS3(_ url: URL, recordHistory: Bool) {
+        let previousURL = currentURL
         currentURL = url
         addressText = displayString(for: url)
         selectedIDs.removeAll()
         selectionAnchorURL = nil
         selectionFocusURL = nil
+
+        if previousURL != url {
+            clearTemporaryAIScopes(save: true)
+        }
 
         if recordHistory {
             if historyIndex < history.count - 1 {
@@ -1676,6 +1835,14 @@ final class FileBrowserViewModel: ObservableObject {
         selectedIDs = [url]
         selectionAnchorURL = url
         selectionFocusURL = url
+    }
+
+    func selectContextIfNeeded(_ item: FileItem) {
+        guard !selectedIDs.contains(item.url) else {
+            return
+        }
+
+        selectOnly(item.url)
     }
 
     func select(_ url: URL) {
@@ -3245,13 +3412,24 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     func copyPath(_ item: FileItem) {
-        copyPath(item.url)
+        let paths = contextualItems(for: item)
+            .map { displayString(for: $0.url) }
+
+        copyPaths(paths)
     }
 
     func copyPath(_ url: URL) {
+        copyPaths([displayString(for: url)])
+    }
+
+    private func copyPaths(_ paths: [String]) {
+        guard !paths.isEmpty else {
+            return
+        }
+
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(displayString(for: url), forType: .string)
+        pasteboard.setString(paths.joined(separator: "\n"), forType: .string)
     }
 
     func revealInFinder(_ item: FileItem) {
@@ -5092,8 +5270,6 @@ final class FileBrowserViewModel: ObservableObject {
             return
         }
 
-        let escapedCommand = appleScriptEscaped(command)
-
         switch terminalApp {
         case .terminal:
             let scriptURL: URL
@@ -5117,21 +5293,36 @@ final class FileBrowserViewModel: ObservableObject {
                 automationTarget: "Terminal"
             )
         case .iTerm:
-            guard isITermAvailable else {
+            guard let iTermURL = iTermApplicationURL else {
                 presentMessage("iTerm is not installed.")
                 return
             }
 
-            runAppleScript(
-                """
-                tell application "iTerm"
-                    activate
-                    create window with default profile command "\(escapedCommand)"
-                end tell
-                """,
-                action: "Open in iTerm",
-                automationTarget: "iTerm"
-            )
+            let scriptURL: URL
+
+            do {
+                scriptURL = try terminalLaunchScriptURL(for: command)
+            } catch {
+                presentError(error, action: "Open in iTerm")
+                return
+            }
+
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+
+            NSWorkspace.shared.open(
+                [scriptURL],
+                withApplicationAt: iTermURL,
+                configuration: configuration
+            ) { [weak self] _, error in
+                guard let error else {
+                    return
+                }
+
+                Task { @MainActor in
+                    self?.presentError(error, action: "Open in iTerm")
+                }
+            }
         }
     }
 

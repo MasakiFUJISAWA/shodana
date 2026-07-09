@@ -408,6 +408,9 @@
 "AI" = "AI";
 "System" = "システム";
 "Allowed AI Scope" = "AIに開示する範囲";
+"Temporary" = "一時";
+"Keep this path when AI mode changes" = "AIモード切替時もこのパスを残す";
+"Unchecked paths are temporary and are cleared when another location is opened or AI mode is re-entered." = "チェックを外したパスは一時扱いとなり、別の場所を開くかAIモードに入り直すとクリアされます。";
 "Add folders that may be disclosed to AI." = "AIに開示してよいフォルダーを追加してください。";
 "AI Provider" = "AIプロバイダー";
 "Endpoint" = "エンドポイント";
@@ -423,6 +426,7 @@
 "AI Search failed: %@" = "AI検索に失敗しました: %@";
 "AI Search failed." = "AI検索に失敗しました。";
 "AI context: %d files selected, %d scanned, %d skipped" = "AIコンテキスト: %d件選択、%d件スキャン、%d件スキップ";
+"Glad it helped. Ask me anything else about these files when you need it." = "よかったです。続けて、このファイル群について気になることがあればそのまま聞いてください。";
 "Folder Access Required" = "フォルダへのアクセス許可が必要です";
 "Grant Shodana access to %@ or one of its parent folders." = "%@ またはその親フォルダへのアクセスをShodanaに許可してください。";
 "Allow Access" = "アクセスを許可";

@@ -408,6 +408,9 @@
 "AI" = "AI";
 "System" = "System";
 "Allowed AI Scope" = "Allowed AI Scope";
+"Temporary" = "Temporary";
+"Keep this path when AI mode changes" = "Keep this path when AI mode changes";
+"Unchecked paths are temporary and are cleared when another location is opened or AI mode is re-entered." = "Unchecked paths are temporary and are cleared when another location is opened or AI mode is re-entered.";
 "Add folders that may be disclosed to AI." = "Add folders that may be disclosed to AI.";
 "AI Provider" = "AI Provider";
 "Endpoint" = "Endpoint";
@@ -423,6 +426,7 @@
 "AI Search failed: %@" = "AI Search failed: %@";
 "AI Search failed." = "AI Search failed.";
 "AI context: %d files selected, %d scanned, %d skipped" = "AI context: %d files selected, %d scanned, %d skipped";
+"Glad it helped. Ask me anything else about these files when you need it." = "Glad it helped. Ask me anything else about these files when you need it.";
 "Folder Access Required" = "Folder Access Required";
 "Grant Shodana access to %@ or one of its parent folders." = "Grant Shodana access to %@ or one of its parent folders.";
 "Allow Access" = "Allow Access";
