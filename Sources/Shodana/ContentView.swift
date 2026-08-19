@@ -2837,16 +2837,7 @@ struct FileListRowContainer: View {
                 browser.open(item)
             })
             .overlay(FileDragInteractionView(item: item).environmentObject(browser))
-            .onDrop(
-                of: ShodanaTransferType.urlDropTypeIdentifiers,
-                isTargeted: nil
-            ) { providers in
-                guard item.canNavigateInto else {
-                    return false
-                }
-
-                return browser.dropItems(from: providers, into: item.url)
-            }
+            .modifier(FileDropTargetFeedbackModifier(item: item, cornerRadius: 5))
     }
 }
 
@@ -2915,16 +2906,96 @@ struct FileInteractiveItem<Content: View>: View {
                 browser.open(item)
             })
             .overlay(FileDragInteractionView(item: item).environmentObject(browser))
-            .onDrop(
-                of: ShodanaTransferType.urlDropTypeIdentifiers,
-                isTargeted: nil
-            ) { providers in
-                guard item.canNavigateInto else {
-                    return false
-                }
+            .modifier(FileDropTargetFeedbackModifier(item: item, cornerRadius: 7))
+    }
+}
 
-                return browser.dropItems(from: providers, into: item.url)
+struct FileDropTargetFeedbackModifier: ViewModifier {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    let item: FileItem
+    let cornerRadius: CGFloat
+
+    @State private var isDropTargeted = false
+    @State private var dropPulse = false
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if item.canNavigateInto {
+            content
+                .scaleEffect(dropPulse ? 1.025 : 1)
+                .zIndex(isDropTargeted || dropPulse ? 2 : 0)
+                .overlay(dropFeedbackOverlay)
+                .animation(.easeInOut(duration: 0.12), value: isDropTargeted)
+                .animation(.spring(response: 0.18, dampingFraction: 0.58), value: dropPulse)
+                .onDrop(
+                    of: ShodanaTransferType.urlDropTypeIdentifiers,
+                    isTargeted: $isDropTargeted
+                ) { providers in
+                    let accepted = browser.dropItems(from: providers, into: item.url)
+
+                    if accepted {
+                        triggerDropPulse()
+                    }
+
+                    return accepted
+                }
+                .help(L10n.string("Drop into folder"))
+        } else {
+            content
+        }
+    }
+
+    private var dropFeedbackOverlay: some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(dropFillColor)
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(dropStrokeColor, lineWidth: isDropTargeted ? 1.5 : 1)
+            )
+            .allowsHitTesting(false)
+    }
+
+    private var dropFillColor: Color {
+        if isDropTargeted {
+            return Color.accentColor.opacity(0.20)
+        }
+
+        if dropPulse {
+            return Color.accentColor.opacity(0.14)
+        }
+
+        return .clear
+    }
+
+    private var dropStrokeColor: Color {
+        if isDropTargeted {
+            return Color.accentColor.opacity(0.78)
+        }
+
+        if dropPulse {
+            return Color.accentColor.opacity(0.55)
+        }
+
+        return .clear
+    }
+
+    private func triggerDropPulse() {
+        withAnimation(.spring(response: 0.16, dampingFraction: 0.45)) {
+            dropPulse = true
+        }
+
+        Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 220_000_000)
+            } catch {
+                return
             }
+
+            withAnimation(.spring(response: 0.22, dampingFraction: 0.72)) {
+                dropPulse = false
+            }
+        }
     }
 }
 
@@ -3172,16 +3243,7 @@ struct FileColumnRow: View {
             )
             .environmentObject(browser)
         )
-        .onDrop(
-            of: ShodanaTransferType.urlDropTypeIdentifiers,
-            isTargeted: nil
-        ) { providers in
-            guard item.canNavigateInto else {
-                return false
-            }
-
-            return browser.dropItems(from: providers, into: item.url)
-        }
+        .modifier(FileDropTargetFeedbackModifier(item: item, cornerRadius: 5))
     }
 }
 
