@@ -1429,7 +1429,7 @@ struct BrowserToolbarView: View {
             .labelsHidden()
             .pickerStyle(.segmented)
             .frame(width: 88)
-            .help(L10n.string("Folder or search results"))
+            .toolbarTooltip(L10n.string("Folder or search results"))
 
             if browser.contentMode == .folder {
                 FolderToolbarControls()
@@ -1482,13 +1482,13 @@ struct FolderToolbarControls: View {
         } label: {
             Image(systemName: "arrow.right.circle")
         }
-        .help(L10n.string("Go"))
+        .toolbarTooltip(L10n.string("Go"))
 
         Toggle(isOn: $browser.showHiddenFiles) {
             Image(systemName: browser.showHiddenFiles ? "eye" : "eye.slash")
         }
         .toggleStyle(.button)
-        .help(L10n.string("Show hidden files"))
+        .toolbarTooltip(L10n.string("Show hidden files"))
     }
 }
 
@@ -1506,7 +1506,7 @@ struct SearchToolbarControls: View {
         .labelsHidden()
         .pickerStyle(.segmented)
         .frame(width: 88)
-        .help(L10n.string("Search Type"))
+        .toolbarTooltip(L10n.string("Search Type"))
 
         TextField(L10n.string("Path"), text: $browser.addressText)
             .textFieldStyle(.roundedBorder)
@@ -1540,7 +1540,7 @@ struct SearchToolbarControls: View {
             Image(systemName: browser.searchInteractionMode == .ai ? "sparkles" : "magnifyingglass.circle")
         }
         .disabled(browser.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || browser.isSearching || browser.isAIThinking)
-        .help(browser.searchInteractionMode == .ai ? L10n.string("Ask AI") : L10n.string("Search"))
+        .toolbarTooltip(browser.searchInteractionMode == .ai ? L10n.string("Ask AI") : L10n.string("Search"))
 
         if browser.searchInteractionMode == .ai {
             ToolbarIconButton(systemImageName: "folder.badge.gearshape", help: "Add Current Path to AI Scope") {
@@ -1575,7 +1575,49 @@ struct ToolbarIconButton: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.regular)
-        .help(L10n.string(help))
+        .toolbarTooltip(L10n.string(help))
+    }
+}
+
+private struct ToolbarTooltipModifier: ViewModifier {
+    let text: String
+    @State private var isHovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .help(text)
+            .onHover { hovering in
+                withAnimation(.easeInOut(duration: 0.08)) {
+                    isHovering = hovering && !text.isEmpty
+                }
+            }
+            .overlay(alignment: Alignment.bottom) {
+                if isHovering {
+                    Text(text)
+                        .font(.caption2.weight(.medium))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: true, vertical: true)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .foregroundStyle(.primary)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 1)
+                        )
+                        .shadow(color: Color.black.opacity(0.16), radius: 8, x: 0, y: 3)
+                        .offset(y: 31)
+                        .zIndex(1000)
+                        .allowsHitTesting(false)
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                }
+            }
+    }
+}
+
+private extension View {
+    func toolbarTooltip(_ text: String) -> some View {
+        modifier(ToolbarTooltipModifier(text: text))
     }
 }
 
@@ -2055,7 +2097,7 @@ struct FileActionBarView: View {
             .labelsHidden()
             .pickerStyle(.segmented)
             .frame(width: 184)
-            .help(L10n.string("View mode"))
+            .toolbarTooltip(L10n.string("View mode"))
 
             FileGroupMenuButton()
 
@@ -2161,7 +2203,7 @@ struct FileGroupMenuButton: View {
         .menuStyle(.button)
         .buttonStyle(.bordered)
         .controlSize(.regular)
-        .help(groupHelpText)
+        .toolbarTooltip(groupHelpText)
     }
 
     private var groupHelpText: String {
@@ -2186,7 +2228,7 @@ struct ExternalToolToolbarButton: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.regular)
-        .help(String(format: L10n.string("Open with %@"), tool.title))
+        .toolbarTooltip(String(format: L10n.string("Open with %@"), tool.title))
         .disabled(!browser.canOpenExternalTool(tool))
     }
 }
@@ -4086,7 +4128,7 @@ struct CloudStatusBadge: View {
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             Image(systemName: "icloud")
-                .font(.system(size: 21, weight: .semibold))
+                .font(.system(size: 16.5, weight: .medium))
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(status.cloudBaseColor)
 
@@ -4094,17 +4136,16 @@ struct CloudStatusBadge: View {
                 ZStack {
                     Circle()
                         .fill(Color(nsColor: .textBackgroundColor))
-                        .frame(width: 15, height: 15)
+                        .frame(width: 9.5, height: 9.5)
 
                     Image(systemName: overlaySystemImageName)
-                        .font(.system(size: 12.5, weight: .heavy))
+                        .font(.system(size: 8.2, weight: .bold))
                         .symbolRenderingMode(.monochrome)
                         .foregroundStyle(status.overlayColor)
                 }
-                .offset(x: 4, y: 3)
             }
         }
-        .frame(width: 34, height: 26)
+        .frame(width: 20, height: 20)
         .help(L10n.string(status.titleKey))
     }
 }
@@ -4155,34 +4196,34 @@ private extension CloudFileStatus {
     var cloudBaseColor: Color {
         switch self {
         case .synced:
-            return Color(red: 0.32, green: 0.48, blue: 0.38)
+            return Color(red: 0.38, green: 0.50, blue: 0.42)
         case .cloudOnly:
-            return Color(red: 0.36, green: 0.46, blue: 0.58)
+            return Color(red: 0.42, green: 0.49, blue: 0.58)
         case .syncing:
-            return Color(red: 0.54, green: 0.45, blue: 0.30)
+            return Color(red: 0.54, green: 0.47, blue: 0.34)
         case .error:
-            return Color(red: 0.55, green: 0.32, blue: 0.32)
+            return Color(red: 0.56, green: 0.37, blue: 0.36)
         case .pinned:
-            return Color(red: 0.30, green: 0.49, blue: 0.52)
+            return Color(red: 0.38, green: 0.52, blue: 0.54)
         case .unknown:
-            return Color(red: 0.47, green: 0.47, blue: 0.49)
+            return Color(red: 0.52, green: 0.52, blue: 0.54)
         }
     }
 
     var overlayColor: Color {
         switch self {
         case .synced:
-            return Color(red: 0.20, green: 0.45, blue: 0.29)
+            return Color(red: 0.25, green: 0.42, blue: 0.30)
         case .cloudOnly:
             return cloudBaseColor
         case .syncing:
-            return Color(red: 0.58, green: 0.40, blue: 0.17)
+            return Color(red: 0.53, green: 0.38, blue: 0.20)
         case .error:
-            return Color(red: 0.62, green: 0.22, blue: 0.20)
+            return Color(red: 0.57, green: 0.25, blue: 0.24)
         case .pinned:
-            return Color(red: 0.18, green: 0.43, blue: 0.47)
+            return Color(red: 0.25, green: 0.43, blue: 0.46)
         case .unknown:
-            return Color(red: 0.38, green: 0.38, blue: 0.41)
+            return Color(red: 0.43, green: 0.43, blue: 0.46)
         }
     }
 }
