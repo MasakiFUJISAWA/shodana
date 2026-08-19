@@ -5722,21 +5722,12 @@ final class FileBrowserViewModel: ObservableObject {
 
         switch terminalApp {
         case .terminal:
-            let scriptURL: URL
-
-            do {
-                scriptURL = try terminalLaunchScriptURL(for: command)
-            } catch {
-                presentError(error, action: "Open in Terminal")
-                return
-            }
-
-            let escapedScriptPath = appleScriptEscaped(scriptURL.path)
+            let escapedCommand = appleScriptEscaped(command)
             runAppleScript(
                 """
                 tell application "Terminal"
                     activate
-                    open POSIX file "\(escapedScriptPath)"
+                    do script "\(escapedCommand)"
                 end tell
                 """,
                 action: "Open in Terminal",
@@ -5765,47 +5756,6 @@ final class FileBrowserViewModel: ObservableObject {
                 action: "Open in iTerm",
                 automationTarget: "iTerm"
             )
-        }
-    }
-
-    private func terminalLaunchScriptURL(for command: String) throws -> URL {
-        let directoryURL = fileManager.temporaryDirectory
-            .appendingPathComponent("ShodanaTerminal", isDirectory: true)
-
-        try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-        removeOldTerminalLaunchScripts(in: directoryURL)
-
-        let scriptURL = directoryURL
-            .appendingPathComponent("shodana-\(UUID().uuidString)", isDirectory: false)
-            .appendingPathExtension("command")
-        let script = """
-        #!/bin/zsh
-        \(command)
-        """
-
-        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
-        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
-        return scriptURL
-    }
-
-    private func removeOldTerminalLaunchScripts(in directoryURL: URL) {
-        guard let urls = try? fileManager.contentsOfDirectory(
-            at: directoryURL,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return
-        }
-
-        let expirationDate = Date().addingTimeInterval(-24 * 60 * 60)
-
-        for url in urls where url.pathExtension == "command" {
-            let modifiedAt = try? url.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate
-
-            if modifiedAt.map({ $0 < expirationDate }) ?? false {
-                try? fileManager.removeItem(at: url)
-            }
         }
     }
 
