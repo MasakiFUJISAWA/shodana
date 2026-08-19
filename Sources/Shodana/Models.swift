@@ -39,7 +39,7 @@ enum FileListColumn: String, CaseIterable, Codable, Hashable {
         case .gitStatus:
             return 52
         case .cloudStatus:
-            return 46
+            return 54
         case .modifiedAt:
             return 190
         case .size:
@@ -56,7 +56,7 @@ enum FileListColumn: String, CaseIterable, Codable, Hashable {
         case .gitStatus:
             return 38
         case .cloudStatus:
-            return 34
+            return 44
         case .modifiedAt:
             return 130
         case .size:

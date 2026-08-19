@@ -2761,12 +2761,19 @@ struct FileListView: View {
             of: ShodanaTransferType.urlDropTypeIdentifiers,
             isTargeted: nil
         ) { providers in
-            browser.dropItems(from: providers, into: browser.currentURL)
+            browser.dropItems(from: providers, into: browser.currentURL, mode: currentFileDropMode())
         }
         .contextMenu {
             FolderContextMenu()
         }
     }
+}
+
+@MainActor
+private func currentFileDropMode() -> FileClipboardMode {
+    NSApp.currentEvent?.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command) == true
+        ? .copy
+        : .cut
 }
 
 struct FileListRowsView: View {
@@ -2923,18 +2930,23 @@ struct FileDropTargetFeedbackModifier: ViewModifier {
     func body(content: Content) -> some View {
         if item.canNavigateInto {
             content
-                .scaleEffect(dropPulse ? 1.025 : 1)
-                .zIndex(isDropTargeted || dropPulse ? 2 : 0)
+                .scaleEffect(isPulsing ? 1.025 : 1)
+                .zIndex(isActivelyTargeted || isPulsing ? 2 : 0)
                 .overlay(dropFeedbackOverlay)
-                .animation(.easeInOut(duration: 0.12), value: isDropTargeted)
-                .animation(.spring(response: 0.18, dampingFraction: 0.58), value: dropPulse)
+                .animation(.easeInOut(duration: 0.12), value: isActivelyTargeted)
+                .animation(.spring(response: 0.18, dampingFraction: 0.58), value: isPulsing)
                 .onDrop(
                     of: ShodanaTransferType.urlDropTypeIdentifiers,
                     isTargeted: $isDropTargeted
                 ) { providers in
-                    let accepted = browser.dropItems(from: providers, into: item.url)
+                    let accepted = browser.dropItems(
+                        from: providers,
+                        into: item.url,
+                        mode: currentFileDropMode()
+                    )
 
                     if accepted {
+                        browser.pulseDropTarget(item.url)
                         triggerDropPulse()
                     }
 
@@ -2946,22 +2958,30 @@ struct FileDropTargetFeedbackModifier: ViewModifier {
         }
     }
 
+    private var isActivelyTargeted: Bool {
+        isDropTargeted || browser.hoveredDropTargetURL == item.url
+    }
+
+    private var isPulsing: Bool {
+        dropPulse || browser.pulsedDropTargetURL == item.url
+    }
+
     private var dropFeedbackOverlay: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             .fill(dropFillColor)
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(dropStrokeColor, lineWidth: isDropTargeted ? 1.5 : 1)
+                    .strokeBorder(dropStrokeColor, lineWidth: isActivelyTargeted ? 1.5 : 1)
             )
             .allowsHitTesting(false)
     }
 
     private var dropFillColor: Color {
-        if isDropTargeted {
+        if isActivelyTargeted {
             return Color.accentColor.opacity(0.20)
         }
 
-        if dropPulse {
+        if isPulsing {
             return Color.accentColor.opacity(0.14)
         }
 
@@ -2969,11 +2989,11 @@ struct FileDropTargetFeedbackModifier: ViewModifier {
     }
 
     private var dropStrokeColor: Color {
-        if isDropTargeted {
+        if isActivelyTargeted {
             return Color.accentColor.opacity(0.78)
         }
 
-        if dropPulse {
+        if isPulsing {
             return Color.accentColor.opacity(0.55)
         }
 
@@ -3493,6 +3513,7 @@ struct FileDragInteractionView: NSViewRepresentable {
         view.item = item
         view.onSingleClick = onSingleClick
         view.onDoubleClick = onDoubleClick
+        view.updateDropRegistration()
     }
 }
 
@@ -3505,7 +3526,21 @@ final class FileDragInteractionNSView: NSView, NSDraggingSource {
 
     private var mouseDownEvent: NSEvent?
     private var didStartDrag = false
+    private var isDropRegistered = false
+    private var isDropTargeted = false
+    private var dropTargetURL: URL?
     private let dragStartThreshold: CGFloat = 4
+    private static let dropPasteboardTypes: [NSPasteboard.PasteboardType] = [
+        NSPasteboard.PasteboardType(ShodanaTransferType.fileURLs),
+        NSPasteboard.PasteboardType(ShodanaTransferType.sftpURL),
+        NSPasteboard.PasteboardType(ShodanaTransferType.s3URL),
+        NSPasteboard.PasteboardType(UTType.fileURL.identifier),
+        NSPasteboard.PasteboardType(UTType.url.identifier),
+        NSPasteboard.PasteboardType(ShodanaTransferType.filenamesPasteboard),
+        .fileURL,
+        .URL,
+        .string
+    ]
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         switch NSApp.currentEvent?.type {
@@ -3513,6 +3548,24 @@ final class FileDragInteractionNSView: NSView, NSDraggingSource {
             return nil
         default:
             return super.hitTest(point)
+        }
+    }
+
+    func updateDropRegistration() {
+        guard item?.canNavigateInto == true else {
+            setDropTargeted(false)
+
+            if isDropRegistered {
+                unregisterDraggedTypes()
+                isDropRegistered = false
+            }
+
+            return
+        }
+
+        if !isDropRegistered {
+            registerForDraggedTypes(Self.dropPasteboardTypes)
+            isDropRegistered = true
         }
     }
 
@@ -3597,11 +3650,104 @@ final class FileDragInteractionNSView: NSView, NSDraggingSource {
         _ session: NSDraggingSession,
         sourceOperationMaskFor context: NSDraggingContext
     ) -> NSDragOperation {
-        .copy
+        context == .withinApplication ? [.copy, .move] : .copy
     }
 
     func ignoreModifierKeys(for session: NSDraggingSession) -> Bool {
         false
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard canAcceptDrop(sender) else {
+            setDropTargeted(false)
+            return []
+        }
+
+        setDropTargeted(true)
+        return dropOperation()
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard canAcceptDrop(sender) else {
+            setDropTargeted(false)
+            return []
+        }
+
+        setDropTargeted(true)
+        return dropOperation()
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        setDropTargeted(false)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        setDropTargeted(false)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        canAcceptDrop(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let browser,
+              let item,
+              item.canNavigateInto else {
+            setDropTargeted(false)
+            return false
+        }
+
+        let accepted = browser.dropItems(
+            from: sender.draggingPasteboard,
+            into: item.url,
+            mode: dropMode()
+        )
+        setDropTargeted(false)
+
+        if accepted {
+            browser.pulseDropTarget(item.url)
+        }
+
+        return accepted
+    }
+
+    private func canAcceptDrop(_ sender: NSDraggingInfo) -> Bool {
+        guard let browser,
+              item?.canNavigateInto == true else {
+            return false
+        }
+
+        return browser.canDropItems(from: sender.draggingPasteboard)
+    }
+
+    private func dropOperation() -> NSDragOperation {
+        dropMode() == .copy ? .copy : .move
+    }
+
+    private func dropMode() -> FileClipboardMode {
+        currentFileDropMode()
+    }
+
+    private func setDropTargeted(_ targeted: Bool) {
+        if targeted {
+            guard let item,
+                  item.canNavigateInto else {
+                return
+            }
+
+            isDropTargeted = true
+            dropTargetURL = item.url
+            browser?.setDropTarget(item.url, isTargeted: true)
+            return
+        }
+
+        guard isDropTargeted || dropTargetURL != nil else {
+            return
+        }
+
+        browser?.setDropTarget(dropTargetURL, isTargeted: false)
+        isDropTargeted = false
+        dropTargetURL = nil
     }
 }
 
@@ -3856,7 +4002,7 @@ struct FileRow: View {
 
             if browser.shouldShowCloudStatusColumn {
                 CloudStatusCell(status: browser.cloudStatus(for: item))
-                    .padding(.horizontal, FileListLayout.columnHorizontalPadding)
+                    .padding(.horizontal, 6)
                     .frame(width: browser.listColumnWidths.width(for: .cloudStatus), alignment: .center)
             }
 
@@ -3940,18 +4086,25 @@ struct CloudStatusBadge: View {
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             Image(systemName: "icloud")
-                .font(.system(size: 17, weight: .semibold))
-                .symbolRenderingMode(.hierarchical)
+                .font(.system(size: 21, weight: .semibold))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(status.cloudBaseColor)
 
             if let overlaySystemImageName = status.listOverlaySystemImageName {
-                Image(systemName: overlaySystemImageName)
-                    .font(.system(size: 8, weight: .bold))
-                    .symbolRenderingMode(.hierarchical)
-                    .offset(x: 3, y: 2)
+                ZStack {
+                    Circle()
+                        .fill(Color(nsColor: .textBackgroundColor))
+                        .frame(width: 15, height: 15)
+
+                    Image(systemName: overlaySystemImageName)
+                        .font(.system(size: 12.5, weight: .heavy))
+                        .symbolRenderingMode(.monochrome)
+                        .foregroundStyle(status.overlayColor)
+                }
+                .offset(x: 4, y: 3)
             }
         }
-        .foregroundStyle(status.listColor)
-        .frame(width: 28, height: 22)
+        .frame(width: 34, height: 26)
         .help(L10n.string(status.titleKey))
     }
 }
@@ -3996,19 +4149,40 @@ private extension CloudFileStatus {
     }
 
     var listColor: Color {
+        cloudBaseColor
+    }
+
+    var cloudBaseColor: Color {
         switch self {
         case .synced:
-            return Color(red: 0.30, green: 0.47, blue: 0.37)
+            return Color(red: 0.32, green: 0.48, blue: 0.38)
         case .cloudOnly:
             return Color(red: 0.36, green: 0.46, blue: 0.58)
         case .syncing:
-            return Color(red: 0.61, green: 0.48, blue: 0.30)
+            return Color(red: 0.54, green: 0.45, blue: 0.30)
         case .error:
-            return Color(red: 0.62, green: 0.30, blue: 0.29)
+            return Color(red: 0.55, green: 0.32, blue: 0.32)
         case .pinned:
-            return Color(red: 0.29, green: 0.50, blue: 0.52)
+            return Color(red: 0.30, green: 0.49, blue: 0.52)
         case .unknown:
             return Color(red: 0.47, green: 0.47, blue: 0.49)
+        }
+    }
+
+    var overlayColor: Color {
+        switch self {
+        case .synced:
+            return Color(red: 0.20, green: 0.45, blue: 0.29)
+        case .cloudOnly:
+            return cloudBaseColor
+        case .syncing:
+            return Color(red: 0.58, green: 0.40, blue: 0.17)
+        case .error:
+            return Color(red: 0.62, green: 0.22, blue: 0.20)
+        case .pinned:
+            return Color(red: 0.18, green: 0.43, blue: 0.47)
+        case .unknown:
+            return Color(red: 0.38, green: 0.38, blue: 0.41)
         }
     }
 }

@@ -10,6 +10,8 @@ final class FileBrowserViewModel: ObservableObject {
     @Published var addressText: String
     @Published private(set) var items: [FileItem] = []
     @Published var selectedIDs: Set<URL> = []
+    @Published private(set) var hoveredDropTargetURL: URL?
+    @Published private(set) var pulsedDropTargetURL: URL?
     @Published var showHiddenFiles = FileBrowserViewModel.loadShowHiddenFiles() {
         didSet {
             UserDefaults.standard.set(showHiddenFiles, forKey: Self.showHiddenFilesDefaultsKey)
@@ -2309,7 +2311,11 @@ final class FileBrowserViewModel: ObservableObject {
         }
     }
 
-    func dropItems(from providers: [NSItemProvider], into destinationFolder: URL) -> Bool {
+    func dropItems(
+        from providers: [NSItemProvider],
+        into destinationFolder: URL,
+        mode: FileClipboardMode
+    ) -> Bool {
         var acceptedDrop = false
 
         for provider in providers {
@@ -2320,16 +2326,67 @@ final class FileBrowserViewModel: ObservableObject {
             }
 
             acceptedDrop = true
-            loadDroppedURL(from: provider, typeIdentifier: typeIdentifier, into: destinationFolder)
+            loadDroppedURL(
+                from: provider,
+                typeIdentifier: typeIdentifier,
+                into: destinationFolder,
+                mode: mode
+            )
         }
 
         return acceptedDrop
     }
 
+    func canDropItems(from pasteboard: NSPasteboard) -> Bool {
+        !droppedURLs(from: pasteboard).isEmpty
+    }
+
+    func dropItems(
+        from pasteboard: NSPasteboard,
+        into destinationFolder: URL,
+        mode: FileClipboardMode
+    ) -> Bool {
+        let droppedURLs = droppedURLs(from: pasteboard)
+
+        guard !droppedURLs.isEmpty else {
+            return false
+        }
+
+        dropURLs(droppedURLs, errorMessage: nil, into: destinationFolder, mode: mode)
+        return true
+    }
+
+    func setDropTarget(_ url: URL?, isTargeted: Bool) {
+        if isTargeted {
+            hoveredDropTargetURL = url
+        } else if url == nil || hoveredDropTargetURL == url {
+            hoveredDropTargetURL = nil
+        }
+    }
+
+    func pulseDropTarget(_ url: URL) {
+        pulsedDropTargetURL = url
+
+        Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 260_000_000)
+            } catch {
+                return
+            }
+
+            guard self?.pulsedDropTargetURL == url else {
+                return
+            }
+
+            self?.pulsedDropTargetURL = nil
+        }
+    }
+
     private func loadDroppedURL(
         from provider: NSItemProvider,
         typeIdentifier: String,
-        into destinationFolder: URL
+        into destinationFolder: URL,
+        mode: FileClipboardMode
     ) {
         if typeIdentifier == ShodanaTransferType.fileURLs || typeIdentifier == ShodanaTransferType.filenamesPasteboard {
             provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { [weak self] data, error in
@@ -2347,7 +2404,8 @@ final class FileBrowserViewModel: ObservableObject {
                     self?.dropURLs(
                         droppedURLs,
                         errorMessage: droppedURLs.isEmpty ? error?.localizedDescription : nil,
-                        into: destinationFolder
+                        into: destinationFolder,
+                        mode: mode
                     )
                 }
             }
@@ -2361,7 +2419,12 @@ final class FileBrowserViewModel: ObservableObject {
                     .flatMap(Self.url(fromDroppedString:))
 
                 Task { @MainActor in
-                    self?.dropItem(droppedURL, errorMessage: droppedURL == nil ? error?.localizedDescription : nil, into: destinationFolder)
+                    self?.dropItem(
+                        droppedURL,
+                        errorMessage: droppedURL == nil ? error?.localizedDescription : nil,
+                        into: destinationFolder,
+                        mode: mode
+                    )
                 }
             }
             return
@@ -2371,7 +2434,12 @@ final class FileBrowserViewModel: ObservableObject {
             let droppedURL = Self.url(fromDroppedItem: item)
 
             Task { @MainActor in
-                self?.dropItem(droppedURL, errorMessage: droppedURL == nil ? itemError?.localizedDescription : nil, into: destinationFolder)
+                self?.dropItem(
+                    droppedURL,
+                    errorMessage: droppedURL == nil ? itemError?.localizedDescription : nil,
+                    into: destinationFolder,
+                    mode: mode
+                )
             }
         }
     }
@@ -2748,7 +2816,7 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     private func transfer(_ sourceURLs: [URL], into destinationFolder: URL, mode: FileClipboardMode) {
-        let sourceURLs = sourceURLs.filter { canTransfer($0, into: destinationFolder) }
+        let sourceURLs = sourceURLs.filter { canTransfer($0, into: destinationFolder, mode: mode) }
 
         guard !sourceURLs.isEmpty else {
             return
@@ -2813,7 +2881,7 @@ final class FileBrowserViewModel: ObservableObject {
 
     private func copyLocalItems(_ sourceURLs: [URL], into destinationFolder: URL, mode: FileClipboardMode) throws {
         for sourceURL in sourceURLs {
-            guard canTransfer(sourceURL, into: destinationFolder) else {
+            guard canTransfer(sourceURL, into: destinationFolder, mode: mode) else {
                 continue
             }
 
@@ -2829,7 +2897,12 @@ final class FileBrowserViewModel: ObservableObject {
         }
     }
 
-    private func canTransfer(_ sourceURL: URL, into destinationFolder: URL) -> Bool {
+    private func canTransfer(_ sourceURL: URL, into destinationFolder: URL, mode: FileClipboardMode) -> Bool {
+        if mode == .cut,
+           isSameTransferLocation(parentFolderURL(forTransfer: sourceURL), destinationFolder) {
+            return false
+        }
+
         guard sourceURL.isFileURL, destinationFolder.isFileURL else {
             return true
         }
@@ -2846,6 +2919,43 @@ final class FileBrowserViewModel: ObservableObject {
         }
 
         return !destinationPath.hasPrefix("\(sourcePath)/")
+    }
+
+    private func parentFolderURL(forTransfer sourceURL: URL) -> URL {
+        if SFTPClient.isSFTPURL(sourceURL) {
+            return SFTPClient.parentURL(for: sourceURL)
+        }
+
+        if S3Client.isS3URL(sourceURL) {
+            return S3Client.parentURL(for: sourceURL)
+        }
+
+        return sourceURL.deletingLastPathComponent()
+    }
+
+    private func isSameTransferLocation(_ lhs: URL, _ rhs: URL) -> Bool {
+        if lhs.isFileURL, rhs.isFileURL {
+            return lhs.standardizedFileURL.path.trimmingTrailingSlash
+                == rhs.standardizedFileURL.path.trimmingTrailingSlash
+        }
+
+        if SFTPClient.isSFTPURL(lhs), SFTPClient.isSFTPURL(rhs) {
+            return lhs.scheme?.lowercased() == rhs.scheme?.lowercased()
+                && lhs.user(percentEncoded: false) == rhs.user(percentEncoded: false)
+                && lhs.host(percentEncoded: false) == rhs.host(percentEncoded: false)
+                && lhs.port == rhs.port
+                && SFTPClient.remotePath(for: lhs).trimmingTrailingSlash
+                    == SFTPClient.remotePath(for: rhs).trimmingTrailingSlash
+        }
+
+        if S3Client.isS3URL(lhs), S3Client.isS3URL(rhs) {
+            return lhs.scheme?.lowercased() == rhs.scheme?.lowercased()
+                && lhs.host(percentEncoded: false) == rhs.host(percentEncoded: false)
+                && S3Client.prefix(for: lhs).trimmingTrailingSlash
+                    == S3Client.prefix(for: rhs).trimmingTrailingSlash
+        }
+
+        return lhs.absoluteString == rhs.absoluteString
     }
 
     private func removeLocalItemsAfterRemoteMove(_ urls: [URL]) throws {
@@ -5328,7 +5438,12 @@ final class FileBrowserViewModel: ObservableObject {
         addFavoriteFolder(URL(fileURLWithPath: path, isDirectory: true))
     }
 
-    private func dropItem(_ url: URL?, errorMessage: String?, into destinationFolder: URL) {
+    private func dropItem(
+        _ url: URL?,
+        errorMessage: String?,
+        into destinationFolder: URL,
+        mode: FileClipboardMode
+    ) {
         if let errorMessage {
             presentMessage("Drop failed: \(errorMessage)")
             return
@@ -5339,10 +5454,15 @@ final class FileBrowserViewModel: ObservableObject {
             return
         }
 
-        transfer([url], into: destinationFolder, mode: .copy)
+        transfer([url], into: destinationFolder, mode: mode)
     }
 
-    private func dropURLs(_ urls: [URL], errorMessage: String?, into destinationFolder: URL) {
+    private func dropURLs(
+        _ urls: [URL],
+        errorMessage: String?,
+        into destinationFolder: URL,
+        mode: FileClipboardMode
+    ) {
         if let errorMessage {
             presentMessage("Drop failed: \(errorMessage)")
             return
@@ -5353,7 +5473,55 @@ final class FileBrowserViewModel: ObservableObject {
             return
         }
 
-        transfer(urls, into: destinationFolder, mode: .copy)
+        transfer(urls, into: destinationFolder, mode: mode)
+    }
+
+    private func droppedURLs(from pasteboard: NSPasteboard) -> [URL] {
+        var droppedURLs: [URL] = []
+
+        if let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [NSURL] {
+            droppedURLs.append(contentsOf: objects.map { $0 as URL })
+        }
+
+        if let filenames = pasteboard.propertyList(
+            forType: NSPasteboard.PasteboardType(ShodanaTransferType.filenamesPasteboard)
+        ) as? [String] {
+            droppedURLs.append(contentsOf: filenames.map { URL(fileURLWithPath: $0) })
+        }
+
+        if let filenamesData = pasteboard.data(forType: NSPasteboard.PasteboardType(ShodanaTransferType.filenamesPasteboard)) {
+            droppedURLs.append(contentsOf: Self.urlsFromFilenamesPasteboardData(filenamesData))
+        }
+
+        let stringTypes = [
+            NSPasteboard.PasteboardType(ShodanaTransferType.fileURLs),
+            NSPasteboard.PasteboardType(ShodanaTransferType.sftpURL),
+            NSPasteboard.PasteboardType(ShodanaTransferType.s3URL),
+            NSPasteboard.PasteboardType(UTType.fileURL.identifier),
+            NSPasteboard.PasteboardType(UTType.url.identifier),
+            .fileURL,
+            .URL,
+            .string
+        ]
+
+        for type in stringTypes {
+            if let value = pasteboard.string(forType: type) {
+                droppedURLs.append(contentsOf: Self.urlsFromDroppedURLList(value))
+            }
+        }
+
+        for pasteboardItem in pasteboard.pasteboardItems ?? [] {
+            for type in stringTypes {
+                if let value = pasteboardItem.string(forType: type) {
+                    droppedURLs.append(contentsOf: Self.urlsFromDroppedURLList(value))
+                }
+            }
+        }
+
+        var seenURLs: Set<String> = []
+        return droppedURLs.filter { url in
+            seenURLs.insert(url.absoluteString).inserted
+        }
     }
 
     private func saveUserFavoriteFolders() {
@@ -5575,36 +5743,28 @@ final class FileBrowserViewModel: ObservableObject {
                 automationTarget: "Terminal"
             )
         case .iTerm:
-            guard let iTermURL = iTermApplicationURL else {
+            guard iTermApplicationURL != nil else {
                 presentMessage("iTerm is not installed.")
                 return
             }
 
-            let scriptURL: URL
-
-            do {
-                scriptURL = try terminalLaunchScriptURL(for: command)
-            } catch {
-                presentError(error, action: "Open in iTerm")
-                return
-            }
-
-            let configuration = NSWorkspace.OpenConfiguration()
-            configuration.activates = true
-
-            NSWorkspace.shared.open(
-                [scriptURL],
-                withApplicationAt: iTermURL,
-                configuration: configuration
-            ) { [weak self] _, error in
-                guard let error else {
-                    return
-                }
-
-                Task { @MainActor in
-                    self?.presentError(error, action: "Open in iTerm")
-                }
-            }
+            let escapedCommand = appleScriptEscaped(command)
+            runAppleScript(
+                """
+                tell application id "com.googlecode.iterm2"
+                    activate
+                    if (count of windows) = 0 then
+                        create window with default profile command "\(escapedCommand)"
+                    else
+                        tell current window
+                            create tab with default profile command "\(escapedCommand)"
+                        end tell
+                    end if
+                end tell
+                """,
+                action: "Open in iTerm",
+                automationTarget: "iTerm"
+            )
         }
     }
 
@@ -5659,7 +5819,7 @@ final class FileBrowserViewModel: ObservableObject {
         }
 
         let directoryURL = directoryURL(for: url)
-        return "cd \(shellQuoted(directoryURL.path)) && exec ${SHELL:-/bin/zsh} -l"
+        return "cd \(shellQuoted(directoryURL.path)) || { echo \(shellQuoted("Shodana: failed to open the requested folder.")); exec ${SHELL:-/bin/zsh} -l; }; exec ${SHELL:-/bin/zsh} -l"
     }
 
     private func remoteTerminalCommand(for url: URL) throws -> String {
@@ -5684,7 +5844,10 @@ final class FileBrowserViewModel: ObservableObject {
         let warningSuppressedCommand = warningSuppressedArguments.map(shellQuoted).joined(separator: " ")
         let baseCommand = baseArguments.map(shellQuoted).joined(separator: " ")
 
-        return "if \(probeCommand) >/dev/null 2>&1; then exec \(warningSuppressedCommand); else exec \(baseCommand); fi"
+        let failureMessage = shellQuoted("Shodana: SSH session failed. Check the host, network, and SSH settings.")
+        let keepOpenMessage = shellQuoted("A local shell is left open so you can retry from here.")
+
+        return "if \(probeCommand) >/dev/null 2>&1; then \(warningSuppressedCommand); else \(baseCommand); fi; status=$?; if [ $status -ne 0 ]; then echo; echo \(failureMessage); echo \(keepOpenMessage); exec ${SHELL:-/bin/zsh} -l; fi"
     }
 
     private func remoteDirectoryPath(for url: URL) -> String {
