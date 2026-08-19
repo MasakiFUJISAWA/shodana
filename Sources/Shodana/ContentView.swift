@@ -1587,12 +1587,10 @@ private struct ToolbarTooltipModifier: ViewModifier {
         content
             .help(text)
             .onHover { hovering in
-                withAnimation(.easeInOut(duration: 0.08)) {
-                    isHovering = hovering && !text.isEmpty
-                }
+                isHovering = hovering && !text.isEmpty
             }
-            .overlay(alignment: Alignment.bottom) {
-                if isHovering {
+            .popover(isPresented: $isHovering, arrowEdge: .top) {
+                if !text.isEmpty {
                     Text(text)
                         .font(.caption2.weight(.medium))
                         .lineLimit(2)
@@ -1600,16 +1598,6 @@ private struct ToolbarTooltipModifier: ViewModifier {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 5)
                         .foregroundStyle(.primary)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 1)
-                        )
-                        .shadow(color: Color.black.opacity(0.16), radius: 8, x: 0, y: 3)
-                        .offset(y: 31)
-                        .zIndex(1000)
-                        .allowsHitTesting(false)
-                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 }
             }
     }
