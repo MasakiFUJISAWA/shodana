@@ -1564,6 +1564,8 @@ struct SearchToolbarControls: View {
 }
 
 struct ToolbarIconButton: View {
+    @Environment(\.isEnabled) private var isEnabled
+
     let systemImageName: String
     let help: String
     let action: () -> Void
@@ -1571,10 +1573,13 @@ struct ToolbarIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImageName)
+                .foregroundStyle(isEnabled ? Color.primary : Color.secondary.opacity(0.38))
                 .frame(width: 18, height: 18)
         }
         .buttonStyle(.bordered)
         .controlSize(.regular)
+        .opacity(isEnabled ? 1 : 0.42)
+        .saturation(isEnabled ? 1 : 0)
         .toolbarTooltip(L10n.string(help))
     }
 }
@@ -2223,6 +2228,10 @@ struct ExternalToolToolbarButton: View {
 
     let tool: ExternalTool
 
+    private var canOpen: Bool {
+        browser.canOpenExternalTool(tool)
+    }
+
     var body: some View {
         Button {
             browser.openExternalTool(tool)
@@ -2233,8 +2242,9 @@ struct ExternalToolToolbarButton: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.regular)
+        .opacity(canOpen ? 1 : 0.48)
+        .saturation(canOpen ? 1 : 0)
         .toolbarTooltip(String(format: L10n.string("Open with %@"), tool.title))
-        .disabled(!browser.canOpenExternalTool(tool))
     }
 }
 

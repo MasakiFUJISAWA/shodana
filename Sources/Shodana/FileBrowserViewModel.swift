@@ -3967,7 +3967,7 @@ final class FileBrowserViewModel: ObservableObject {
                 return false
             }
 
-            return applicationURL(for: normalizedTool) != nil
+            return !normalizedTool.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
 
@@ -5745,12 +5745,16 @@ final class FileBrowserViewModel: ObservableObject {
                 tell application id "com.googlecode.iterm2"
                     activate
                     if (count of windows) = 0 then
-                        create window with default profile command "\(escapedCommand)"
+                        create window with default profile
                     else
                         tell current window
-                            create tab with default profile command "\(escapedCommand)"
+                            create tab with default profile
                         end tell
                     end if
+                    delay 0.1
+                    tell current session of current window
+                        write text "\(escapedCommand)"
+                    end tell
                 end tell
                 """,
                 action: "Open in iTerm",
@@ -5815,26 +5819,96 @@ final class FileBrowserViewModel: ObservableObject {
             return
         }
 
-        guard let applicationURL = applicationURL(for: tool) else {
-            presentMessage("\(tool.title) is not installed.")
-            return
-        }
+        let applicationURL = applicationURL(for: tool)
 
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-
-        NSWorkspace.shared.open(
-            [folderURL],
-            withApplicationAt: applicationURL,
-            configuration: configuration
-        ) { [weak self] _, error in
-            guard let error else {
-                return
-            }
-
-            Task { @MainActor in
+        Task { [weak self] in
+            do {
+                try await Self.openFolderWithOpenCommand(
+                    folderURL: folderURL,
+                    applicationURL: applicationURL,
+                    bundleIdentifiers: tool.bundleIdentifiers,
+                    applicationName: tool.title
+                )
+            } catch {
                 self?.presentError(error, action: "Open in \(tool.title)")
             }
+        }
+    }
+
+    private nonisolated static func openFolderWithOpenCommand(
+        folderURL: URL,
+        applicationURL: URL?,
+        bundleIdentifiers: [String],
+        applicationName: String
+    ) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            var attempts: [[String]] = []
+            var seenAttemptKeys = Set<String>()
+
+            func appendAttempt(_ arguments: [String]) {
+                let key = arguments.joined(separator: "\u{1f}")
+
+                if seenAttemptKeys.insert(key).inserted {
+                    attempts.append(arguments)
+                }
+            }
+
+            for bundleIdentifier in bundleIdentifiers where !bundleIdentifier.isEmpty {
+                appendAttempt(["-b", bundleIdentifier, folderURL.path])
+            }
+
+            if let applicationURL {
+                appendAttempt(["-a", applicationURL.path, folderURL.path])
+                appendAttempt(["-a", applicationURL.deletingPathExtension().lastPathComponent, folderURL.path])
+            }
+
+            let trimmedApplicationName = applicationName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedApplicationName.isEmpty {
+                appendAttempt(["-a", trimmedApplicationName, folderURL.path])
+            }
+
+            var messages: [String] = []
+
+            for arguments in attempts {
+                do {
+                    try runOpenCommand(arguments)
+                    return
+                } catch {
+                    messages.append(error.localizedDescription)
+                }
+            }
+
+            throw OpenCommandError(message: messages.joined(separator: "\n"))
+        }.value
+    }
+
+    private nonisolated static func runOpenCommand(_ arguments: [String]) throws {
+        let process = Process()
+        let errorPipe = Pipe()
+
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = arguments
+        process.standardError = errorPipe
+        process.standardOutput = Pipe()
+
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorMessage = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .nilIfEmpty
+                ?? "open \(arguments.joined(separator: " ")) failed with status \(process.terminationStatus)."
+            throw OpenCommandError(message: errorMessage)
+        }
+    }
+
+    private struct OpenCommandError: LocalizedError {
+        let message: String
+
+        var errorDescription: String? {
+            message.nilIfEmpty ?? "Application launch failed."
         }
     }
 
