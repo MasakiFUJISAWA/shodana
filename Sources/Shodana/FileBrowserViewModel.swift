@@ -1,4 +1,5 @@
-import AppKit
+@preconcurrency import AppKit
+import Darwin
 import Foundation
 import NetFS
 import UniformTypeIdentifiers
@@ -92,10 +93,18 @@ final class FileBrowserViewModel: ObservableObject {
     @Published private(set) var launcherFolderShortcuts: [LauncherFolderShortcut] = []
     @Published var isLauncherFoldersSettingsPresented = false
     @Published var groupMode: FileGroupMode = .none
+    @Published var listColumnWidths: FileListColumnWidths = FileBrowserViewModel.loadListColumnWidths() {
+        didSet {
+            Self.saveListColumnWidths(listColumnWidths.clamped)
+        }
+    }
 
     private static let showHiddenFilesDefaultsKey = "Shodana.showHiddenFiles"
     private static let legacyShowHiddenFilesDefaultsKeys = ["Mihako.showHiddenFiles"]
+    private static let listColumnWidthsDefaultsKey = "Shodana.fileListColumnWidths"
+    private static let legacyListColumnWidthsDefaultsKeys = ["Mihako.fileListColumnWidths"]
     private static let gitRemoteCheckIntervalNanoseconds: UInt64 = 60 * 1_000_000_000
+    private static let fileSystemRefreshDebounceNanoseconds: UInt64 = 400_000_000
 
     private let fileManager = FileManager.default
     private let userFavoritesDefaultsKey = "Shodana.userFavoriteFolders"
@@ -119,6 +128,10 @@ final class FileBrowserViewModel: ObservableObject {
     private var gitRemoteTrackingTask: Task<Void, Never>?
     private var gitStatusTask: Task<Void, Never>?
     private var cloudStatusMonitorTask: Task<Void, Never>?
+    private var fileSystemRefreshTask: Task<Void, Never>?
+    private var displayedFolderMonitor: LocalFolderChangeMonitor?
+    private var monitoredFolderURL: URL?
+    private var volumeChangeObservers: [NotificationObserverToken] = []
     private var cloudStatusOverrides: [URL: CloudFileStatus] = [:]
     private var cloudStatusOverrideDates: [URL: Date] = [:]
     private var securityScopedFolderAccessURLs: [URL] = []
@@ -165,6 +178,7 @@ final class FileBrowserViewModel: ObservableObject {
         aiSearchSettings = AISearchSettingsStore.load()
         aiProviderAPIKey = AIProviderSecretStore.loadAPIKey() ?? ""
         refreshSidebarLocations()
+        startVolumeChangeMonitoring()
         reload()
         startGitRemoteTrackingMonitor()
 
@@ -180,6 +194,11 @@ final class FileBrowserViewModel: ObservableObject {
         gitRemoteTrackingTask?.cancel()
         gitStatusTask?.cancel()
         cloudStatusMonitorTask?.cancel()
+        fileSystemRefreshTask?.cancel()
+        displayedFolderMonitor?.cancel()
+        volumeChangeObservers.forEach {
+            NSWorkspace.shared.notificationCenter.removeObserver($0.value)
+        }
         securityScopedFolderAccessURLs.forEach { $0.stopAccessingSecurityScopedResource() }
     }
 
@@ -275,6 +294,22 @@ final class FileBrowserViewModel: ObservableObject {
 
     var gitBranchTrackingIndicator: String? {
         gitRepositoryInfo?.trackingStatus?.indicator
+    }
+
+    var selectedSidebarLocationID: String? {
+        sidebarSections
+            .flatMap(\.locations)
+            .compactMap { location -> (id: String, score: Int)? in
+                guard let score = sidebarSelectionScore(for: location) else {
+                    return nil
+                }
+
+                return (location.id, score)
+            }
+            .max { left, right in
+                left.score < right.score
+            }?
+            .id
     }
 
     var gitBranchTrackingDescription: String? {
@@ -583,12 +618,14 @@ final class FileBrowserViewModel: ObservableObject {
         refreshGitRepositoryInfo()
 
         if isCurrentSFTP {
+            stopDisplayedFolderMonitor()
             restartCloudStatusMonitor()
             reloadSFTPDirectory()
             return
         }
 
         if isCurrentS3 {
+            stopDisplayedFolderMonitor()
             restartCloudStatusMonitor()
             reloadS3Directory()
             return
@@ -598,6 +635,7 @@ final class FileBrowserViewModel: ObservableObject {
 
         do {
             items = sortedItems(try loadLocalItems(at: currentURL))
+            startDisplayedFolderMonitorIfNeeded(for: currentURL)
             selectedIDs = selectedIDs.filter { selectedURL in
                 items.contains { $0.url == selectedURL }
             }
@@ -616,6 +654,7 @@ final class FileBrowserViewModel: ObservableObject {
             selectedIDs.removeAll()
             selectionAnchorURL = nil
             selectionFocusURL = nil
+            stopDisplayedFolderMonitor()
             restartCloudStatusMonitor()
 
             if isPermissionDenied(error) {
@@ -647,6 +686,164 @@ final class FileBrowserViewModel: ObservableObject {
         )
 
         return try urls.map(FileItem.load)
+    }
+
+    private func startDisplayedFolderMonitorIfNeeded(for url: URL) {
+        guard url.isFileURL else {
+            stopDisplayedFolderMonitor()
+            return
+        }
+
+        let targetURL = url.standardizedFileURL
+        var isDirectory: ObjCBool = false
+
+        guard fileManager.fileExists(atPath: targetURL.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            stopDisplayedFolderMonitor()
+            return
+        }
+
+        if monitoredFolderURL?.standardizedFileURL.path == targetURL.path,
+           displayedFolderMonitor != nil {
+            return
+        }
+
+        stopDisplayedFolderMonitor()
+
+        guard let monitor = LocalFolderChangeMonitor(url: targetURL, eventHandler: { [weak self] in
+            Task { @MainActor in
+                self?.scheduleFileSystemRefresh(for: targetURL)
+            }
+        }) else {
+            return
+        }
+
+        displayedFolderMonitor = monitor
+        monitoredFolderURL = targetURL
+    }
+
+    private func stopDisplayedFolderMonitor() {
+        displayedFolderMonitor?.cancel()
+        displayedFolderMonitor = nil
+        monitoredFolderURL = nil
+    }
+
+    private func startVolumeChangeMonitoring() {
+        let center = NSWorkspace.shared.notificationCenter
+        let names: [Notification.Name] = [
+            NSWorkspace.didMountNotification,
+            NSWorkspace.didUnmountNotification,
+            NSWorkspace.didRenameVolumeNotification
+        ]
+
+        volumeChangeObservers = names.map { name in
+            let observer = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                let notificationName = notification.name
+                let volumeURL = notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL
+
+                Task { @MainActor in
+                    self?.handleVolumeChange(name: notificationName, volumeURL: volumeURL)
+                }
+            }
+
+            return NotificationObserverToken(value: observer)
+        }
+    }
+
+    private func handleVolumeChange(name: Notification.Name, volumeURL: URL?) {
+        refreshSidebarLocations()
+
+        guard let volumeURL else {
+            scheduleFileSystemRefresh(for: currentURL)
+            return
+        }
+
+        let volumePath = volumeURL.standardizedFileURL.path.trimmingTrailingSlash
+        let currentPath = currentURL.standardizedFileURL.path.trimmingTrailingSlash
+
+        if name == NSWorkspace.didUnmountNotification,
+           Self.path(currentPath, isInsideOrEqualTo: volumePath) {
+            navigateToNearestAvailableLocalFolder(from: currentURL)
+            return
+        }
+
+        if currentPath == "/Volumes" || Self.path(currentPath, isInsideOrEqualTo: volumePath) {
+            scheduleFileSystemRefresh(for: currentURL)
+        }
+    }
+
+    private func scheduleFileSystemRefresh(for url: URL) {
+        guard url.isFileURL else {
+            return
+        }
+
+        fileSystemRefreshTask?.cancel()
+        fileSystemRefreshTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: Self.fileSystemRefreshDebounceNanoseconds)
+            } catch {
+                return
+            }
+
+            guard let self, !Task.isCancelled else {
+                return
+            }
+
+            self.refreshAfterFileSystemChange(for: url)
+        }
+    }
+
+    private func refreshAfterFileSystemChange(for url: URL) {
+        guard currentURL.standardizedFileURL.path == url.standardizedFileURL.path else {
+            return
+        }
+
+        var isDirectory: ObjCBool = false
+
+        guard fileManager.fileExists(atPath: currentURL.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            navigateToNearestAvailableLocalFolder(from: currentURL)
+            return
+        }
+
+        if contentMode == .search,
+           searchInteractionMode == .keyword,
+           hasPerformedSearch,
+           !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            performSearch()
+        } else if contentMode == .folder {
+            reload()
+        } else {
+            refreshSidebarLocations()
+            restartCloudStatusMonitor()
+        }
+    }
+
+    private func navigateToNearestAvailableLocalFolder(from url: URL) {
+        let fallbackURL = nearestAvailableLocalFolder(from: url)
+
+        guard fallbackURL.standardizedFileURL.path != currentURL.standardizedFileURL.path else {
+            reload()
+            return
+        }
+
+        navigate(to: fallbackURL)
+    }
+
+    private func nearestAvailableLocalFolder(from url: URL) -> URL {
+        var candidate = url.standardizedFileURL
+
+        while candidate.path != "/" {
+            candidate.deleteLastPathComponent()
+
+            var isDirectory: ObjCBool = false
+            if fileManager.fileExists(atPath: candidate.path, isDirectory: &isDirectory),
+               isDirectory.boolValue {
+                return candidate
+            }
+        }
+
+        return fileManager.homeDirectoryForCurrentUser
     }
 
     func itemsForDisplay(at url: URL) async throws -> [FileItem] {
@@ -2189,6 +2386,16 @@ final class FileBrowserViewModel: ObservableObject {
 
         items = sortedItems(items)
         searchResults = sortedItems(searchResults)
+    }
+
+    func setListColumnWidth(_ column: FileListColumn, to width: CGFloat) {
+        var nextWidths = listColumnWidths
+        nextWidths.setWidth(width, for: column)
+        listColumnWidths = nextWidths
+    }
+
+    func resetListColumnWidths() {
+        listColumnWidths = .defaults
     }
 
     func createFolder() {
@@ -4639,6 +4846,26 @@ final class FileBrowserViewModel: ObservableObject {
         ) ?? false
     }
 
+    private static func loadListColumnWidths() -> FileListColumnWidths {
+        guard let data = AppDefaults.migratedData(
+            forKey: listColumnWidthsDefaultsKey,
+            legacyKeys: legacyListColumnWidthsDefaultsKeys
+        ),
+              let widths = try? JSONDecoder().decode(FileListColumnWidths.self, from: data) else {
+            return .defaults
+        }
+
+        return widths.clamped
+    }
+
+    private static func saveListColumnWidths(_ widths: FileListColumnWidths) {
+        guard let data = try? JSONEncoder().encode(widths.clamped) else {
+            return
+        }
+
+        UserDefaults.standard.set(data, forKey: listColumnWidthsDefaultsKey)
+    }
+
     private static func loadUserFavoriteFolders(defaultsKey: String, legacyDefaultsKeys: [String]) -> [URL] {
         let paths = AppDefaults.migratedStringArray(
             forKey: defaultsKey,
@@ -5161,6 +5388,61 @@ final class FileBrowserViewModel: ObservableObject {
         sidebarLocationOrderIDs = ids
         UserDefaults.standard.set(ids, forKey: sidebarLocationOrderDefaultsKey)
         refreshSidebarLocations()
+    }
+
+    private func sidebarSelectionScore(for location: SidebarLocation) -> Int? {
+        let locationURL = location.url
+
+        if SFTPClient.isSFTPURL(currentURL) || SFTPClient.isSFTPURL(locationURL) {
+            return remoteSidebarSelectionScore(
+                locationURL: locationURL,
+                currentURL: currentURL,
+                pathProvider: SFTPClient.remotePath(for:)
+            )
+        }
+
+        if S3Client.isS3URL(currentURL) || S3Client.isS3URL(locationURL) {
+            return remoteSidebarSelectionScore(
+                locationURL: locationURL,
+                currentURL: currentURL,
+                pathProvider: { S3Client.prefix(for: $0).trimmingTrailingSlash }
+            )
+        }
+
+        guard currentURL.isFileURL, locationURL.isFileURL else {
+            return nil
+        }
+
+        let currentPath = currentURL.standardizedFileURL.path.trimmingTrailingSlash
+        let locationPath = locationURL.standardizedFileURL.path.trimmingTrailingSlash
+
+        guard Self.path(currentPath, isInsideOrEqualTo: locationPath) else {
+            return nil
+        }
+
+        return locationPath.count
+    }
+
+    private func remoteSidebarSelectionScore(
+        locationURL: URL,
+        currentURL: URL,
+        pathProvider: (URL) -> String
+    ) -> Int? {
+        guard locationURL.scheme?.lowercased() == currentURL.scheme?.lowercased(),
+              locationURL.host(percentEncoded: false) == currentURL.host(percentEncoded: false),
+              locationURL.user(percentEncoded: false) == currentURL.user(percentEncoded: false),
+              locationURL.port == currentURL.port else {
+            return nil
+        }
+
+        let currentPath = pathProvider(currentURL).trimmingTrailingSlash
+        let locationPath = pathProvider(locationURL).trimmingTrailingSlash
+
+        guard Self.path(currentPath, isInsideOrEqualTo: locationPath) else {
+            return nil
+        }
+
+        return 10_000 + locationPath.count
     }
 
     private func displayString(for url: URL) -> String {
@@ -5702,6 +5984,48 @@ private extension NSResponder {
         }
 
         return false
+    }
+}
+
+private struct NotificationObserverToken: @unchecked Sendable {
+    let value: NSObjectProtocol
+}
+
+private final class LocalFolderChangeMonitor: @unchecked Sendable {
+    private let source: DispatchSourceFileSystemObject
+    private var isCancelled = false
+
+    init?(url: URL, eventHandler: @escaping @Sendable () -> Void) {
+        let fileDescriptor = Darwin.open(url.path, O_EVTONLY)
+
+        guard fileDescriptor >= 0 else {
+            return nil
+        }
+
+        let queue = DispatchQueue(label: "dev.masakifujisawa.shodana.local-folder-monitor")
+        source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fileDescriptor,
+            eventMask: [.attrib, .delete, .extend, .link, .rename, .revoke, .write],
+            queue: queue
+        )
+        source.setEventHandler(handler: eventHandler)
+        source.setCancelHandler {
+            Darwin.close(fileDescriptor)
+        }
+        source.resume()
+    }
+
+    deinit {
+        cancel()
+    }
+
+    func cancel() {
+        guard !isCancelled else {
+            return
+        }
+
+        isCancelled = true
+        source.cancel()
     }
 }
 

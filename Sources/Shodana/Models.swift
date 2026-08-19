@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import UniformTypeIdentifiers
 
 enum FileSortColumn: String, CaseIterable {
@@ -6,6 +7,149 @@ enum FileSortColumn: String, CaseIterable {
     case modifiedAt
     case size
     case kind
+}
+
+enum FileListColumn: String, CaseIterable, Codable, Hashable {
+    case name
+    case gitStatus
+    case cloudStatus
+    case modifiedAt
+    case size
+    case kind
+
+    var sortColumn: FileSortColumn? {
+        switch self {
+        case .name:
+            return .name
+        case .modifiedAt:
+            return .modifiedAt
+        case .size:
+            return .size
+        case .kind:
+            return .kind
+        case .gitStatus, .cloudStatus:
+            return nil
+        }
+    }
+
+    var defaultWidth: CGFloat {
+        switch self {
+        case .name:
+            return 360
+        case .gitStatus:
+            return 52
+        case .cloudStatus:
+            return 46
+        case .modifiedAt:
+            return 190
+        case .size:
+            return 120
+        case .kind:
+            return 180
+        }
+    }
+
+    var minimumWidth: CGFloat {
+        switch self {
+        case .name:
+            return 180
+        case .gitStatus:
+            return 38
+        case .cloudStatus:
+            return 34
+        case .modifiedAt:
+            return 130
+        case .size:
+            return 82
+        case .kind:
+            return 110
+        }
+    }
+
+    var maximumWidth: CGFloat {
+        switch self {
+        case .name:
+            return 900
+        case .gitStatus:
+            return 96
+        case .cloudStatus:
+            return 88
+        case .modifiedAt:
+            return 300
+        case .size:
+            return 200
+        case .kind:
+            return 340
+        }
+    }
+
+    func clamped(_ width: CGFloat) -> CGFloat {
+        min(max(width, minimumWidth), maximumWidth)
+    }
+}
+
+struct FileListColumnWidths: Codable, Hashable {
+    var name: CGFloat
+    var gitStatus: CGFloat
+    var cloudStatus: CGFloat
+    var modifiedAt: CGFloat
+    var size: CGFloat
+    var kind: CGFloat
+
+    static let defaults = FileListColumnWidths(
+        name: FileListColumn.name.defaultWidth,
+        gitStatus: FileListColumn.gitStatus.defaultWidth,
+        cloudStatus: FileListColumn.cloudStatus.defaultWidth,
+        modifiedAt: FileListColumn.modifiedAt.defaultWidth,
+        size: FileListColumn.size.defaultWidth,
+        kind: FileListColumn.kind.defaultWidth
+    )
+
+    func width(for column: FileListColumn) -> CGFloat {
+        switch column {
+        case .name:
+            return name
+        case .gitStatus:
+            return gitStatus
+        case .cloudStatus:
+            return cloudStatus
+        case .modifiedAt:
+            return modifiedAt
+        case .size:
+            return size
+        case .kind:
+            return kind
+        }
+    }
+
+    mutating func setWidth(_ width: CGFloat, for column: FileListColumn) {
+        let clampedWidth = column.clamped(width)
+
+        switch column {
+        case .name:
+            name = clampedWidth
+        case .gitStatus:
+            gitStatus = clampedWidth
+        case .cloudStatus:
+            cloudStatus = clampedWidth
+        case .modifiedAt:
+            modifiedAt = clampedWidth
+        case .size:
+            size = clampedWidth
+        case .kind:
+            kind = clampedWidth
+        }
+    }
+
+    var clamped: FileListColumnWidths {
+        var result = self
+
+        for column in FileListColumn.allCases {
+            result.setWidth(result.width(for: column), for: column)
+        }
+
+        return result
+    }
 }
 
 enum BrowserViewMode: String, CaseIterable, Identifiable {

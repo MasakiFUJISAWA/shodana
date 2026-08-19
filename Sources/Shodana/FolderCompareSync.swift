@@ -1685,7 +1685,7 @@ struct FolderCompareSyncSheet: View {
     }
 }
 
-private struct ResizableSheetWindowConfigurator: NSViewRepresentable {
+struct ResizableSheetWindowConfigurator: NSViewRepresentable {
     let minSize: NSSize
 
     func makeNSView(context: Context) -> NSView {

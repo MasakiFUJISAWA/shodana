@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var isSwitchingTabs = false
     @State private var isDualPaneEnabled = false
     @State private var isFolderCompareSyncPresented = false
+    @State private var isCloudMirrorSyncPresented = false
 
     private let minimumSidebarWidth: CGFloat = 220
     private let preferredMaximumSidebarWidth: CGFloat = 560
@@ -56,6 +57,9 @@ struct ContentView: View {
                         onToggleDualPane: toggleDualPane,
                         onCompareSync: {
                             isFolderCompareSyncPresented = true
+                        },
+                        onCloudMirrorSync: {
+                            isCloudMirrorSyncPresented = true
                         }
                     )
 
@@ -105,6 +109,14 @@ struct ContentView: View {
             FolderCompareSyncSheet(
                 leftInitialURL: browser.currentURL,
                 rightInitialURL: isDualPaneEnabled ? secondaryBrowser.currentURL : browser.currentURL,
+                showHiddenFiles: browser.showHiddenFiles,
+                locationChoices: folderCompareLocationChoices()
+            )
+        }
+        .sheet(isPresented: $isCloudMirrorSyncPresented) {
+            CloudMirrorSyncJobsSheet(
+                sourceInitialURL: browser.currentURL,
+                destinationInitialURL: isDualPaneEnabled ? secondaryBrowser.currentURL : browser.currentURL,
                 showHiddenFiles: browser.showHiddenFiles,
                 locationChoices: folderCompareLocationChoices()
             )
@@ -485,6 +497,7 @@ struct BrowserTabBar: View {
     let onClose: (BrowserTab) -> Void
     let onToggleDualPane: () -> Void
     let onCompareSync: () -> Void
+    let onCloudMirrorSync: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
@@ -516,6 +529,10 @@ struct BrowserTabBar: View {
 
             ToolbarIconButton(systemImageName: "arrow.left.arrow.right", help: "Compare / Sync") {
                 onCompareSync()
+            }
+
+            ToolbarIconButton(systemImageName: "arrow.triangle.2.circlepath", help: "Cloud Mirror Sync") {
+                onCloudMirrorSync()
             }
         }
         .padding(.horizontal, 10)
@@ -790,11 +807,14 @@ struct SidebarView: View {
     @State private var draggedLocationID: String?
 
     var body: some View {
+        let selectedLocationID = browser.selectedSidebarLocationID
+
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(browser.sidebarSections) { section in
                     SidebarLocationsSection(
                         section: section,
+                        selectedLocationID: selectedLocationID,
                         acceptsFavoriteDrops: section.title == "Favorites",
                         isDropTargeted: section.title == "Favorites" ? $isFavoritesDropTargeted : .constant(false),
                         allowsLocationReordering: section.title == "Locations",
@@ -815,6 +835,7 @@ struct SidebarLocationsSection: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
 
     let section: SidebarSection
+    let selectedLocationID: String?
     let acceptsFavoriteDrops: Bool
     @Binding var isDropTargeted: Bool
     let allowsLocationReordering: Bool
@@ -838,7 +859,10 @@ struct SidebarLocationsSection: View {
                 )
 
             ForEach(section.locations) { location in
-                SidebarLocationRow(location: location)
+                SidebarLocationRow(
+                    location: location,
+                    isSelected: location.id == selectedLocationID
+                )
                     .modifier(
                         FavoriteDropTargetModifier(
                             isEnabled: acceptsFavoriteDrops,
@@ -1035,22 +1059,46 @@ struct SidebarLocationRow: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
 
     let location: SidebarLocation
+    let isSelected: Bool
+
+    private var rowBackground: Color {
+        isSelected ? Color.accentColor.opacity(0.16) : Color.clear
+    }
+
+    private var iconColor: Color {
+        if location.isUnavailable {
+            return .secondary
+        }
+
+        return isSelected ? .accentColor : .primary
+    }
 
     var body: some View {
         Button {
             browser.open(location)
         } label: {
-            Label {
-                Text(L10n.string(location.title))
-            } icon: {
-                Image(systemName: location.systemImageName)
+            HStack(spacing: 0) {
+                Label {
+                    Text(L10n.string(location.title))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                } icon: {
+                    Image(systemName: location.systemImageName)
+                        .foregroundStyle(iconColor)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(rowBackground)
+            )
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 1)
         .contextMenu {
             LocationContextMenu(location: location)
         }
@@ -2738,7 +2786,15 @@ struct FileListRowsView: View {
                     }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .frame(
+                minWidth: FileListLayout.contentWidth(
+                    widths: browser.listColumnWidths,
+                    includesGitStatus: browser.canUseGit,
+                    includesCloudStatus: browser.shouldShowCloudStatusColumn
+                ),
+                maxWidth: .infinity,
+                alignment: .topLeading
+            )
         }
         .background(Color(nsColor: .textBackgroundColor))
     }
@@ -3552,12 +3608,30 @@ struct FileSystemIcon: View {
 
 private enum FileListLayout {
     static let rowHorizontalPadding: CGFloat = 14
-    static let columnHorizontalPadding: CGFloat = 6
-    static let gitStatusColumnWidth: CGFloat = 58
-    static let cloudStatusColumnWidth: CGFloat = 66
-    static let modifiedColumnWidth: CGFloat = 180
-    static let sizeColumnWidth: CGFloat = 110
-    static let kindColumnWidth: CGFloat = 170
+    static let columnHorizontalPadding: CGFloat = 10
+    static let columnResizeHandleWidth: CGFloat = 8
+
+    static func contentWidth(
+        widths: FileListColumnWidths,
+        includesGitStatus: Bool,
+        includesCloudStatus: Bool
+    ) -> CGFloat {
+        var width = rowHorizontalPadding * 2
+        width += widths.width(for: .name)
+
+        if includesGitStatus {
+            width += widths.width(for: .gitStatus)
+        }
+
+        if includesCloudStatus {
+            width += widths.width(for: .cloudStatus)
+        }
+
+        width += widths.width(for: .modifiedAt)
+        width += widths.width(for: .size)
+        width += widths.width(for: .kind)
+        return width
+    }
 }
 
 struct FileHeaderRow: View {
@@ -3566,32 +3640,32 @@ struct FileHeaderRow: View {
     var body: some View {
         HStack(spacing: 0) {
             HeaderCell(title: "Name", column: .name)
-                .frame(minWidth: 260, maxWidth: .infinity, alignment: .leading)
 
             if browser.canUseGit {
-                Text(L10n.string("Git"))
-                    .padding(.horizontal, FileListLayout.columnHorizontalPadding)
-                    .frame(width: FileListLayout.gitStatusColumnWidth, alignment: .leading)
+                HeaderCell(title: "Git", column: .gitStatus)
             }
 
             if browser.shouldShowCloudStatusColumn {
-                Text(L10n.string("Cloud"))
-                    .padding(.horizontal, FileListLayout.columnHorizontalPadding)
-                    .frame(width: FileListLayout.cloudStatusColumnWidth, alignment: .center)
+                HeaderCell(title: "Cloud", column: .cloudStatus, alignment: .center)
             }
 
             HeaderCell(title: "Modified", column: .modifiedAt)
-                .frame(width: FileListLayout.modifiedColumnWidth, alignment: .leading)
 
-            HeaderCell(title: "Size", column: .size)
-                .frame(width: FileListLayout.sizeColumnWidth, alignment: .trailing)
+            HeaderCell(title: "Size", column: .size, alignment: .trailing)
 
             HeaderCell(title: "Kind", column: .kind)
-                .frame(width: FileListLayout.kindColumnWidth, alignment: .leading)
         }
         .font(.caption.weight(.semibold))
         .foregroundStyle(.secondary)
         .padding(.horizontal, FileListLayout.rowHorizontalPadding)
+        .frame(
+            minWidth: FileListLayout.contentWidth(
+                widths: browser.listColumnWidths,
+                includesGitStatus: browser.canUseGit,
+                includesCloudStatus: browser.shouldShowCloudStatusColumn
+            ),
+            alignment: .leading
+        )
         .frame(height: 30)
         .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -3601,24 +3675,97 @@ struct HeaderCell: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
 
     let title: String
-    let column: FileSortColumn
+    let column: FileListColumn
+    var alignment: Alignment = .leading
 
     var body: some View {
-        Button {
-            browser.sort(by: column)
-        } label: {
-            HStack(spacing: 4) {
-                Text(L10n.string(title))
+        HStack(spacing: 0) {
+            headerContent
+                .frame(maxWidth: .infinity, alignment: alignment)
+                .padding(.horizontal, FileListLayout.columnHorizontalPadding)
 
-                if browser.sortColumn == column {
-                    Image(systemName: browser.sortAscending ? "chevron.up" : "chevron.down")
-                        .font(.caption2)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: column == .size ? .trailing : .leading)
-            .padding(.horizontal, FileListLayout.columnHorizontalPadding)
+            FileListColumnResizeHandle(column: column)
         }
-        .buttonStyle(.plain)
+        .frame(width: browser.listColumnWidths.width(for: column), alignment: alignment)
+    }
+
+    @ViewBuilder
+    private var headerContent: some View {
+        if let sortColumn = column.sortColumn {
+            Button {
+                browser.sort(by: sortColumn)
+            } label: {
+                HStack(spacing: 4) {
+                    Text(L10n.string(title))
+
+                    if browser.sortColumn == sortColumn {
+                        Image(systemName: browser.sortAscending ? "chevron.up" : "chevron.down")
+                            .font(.caption2)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: alignment)
+            }
+            .buttonStyle(.plain)
+        } else {
+            Text(L10n.string(title))
+                .frame(maxWidth: .infinity, alignment: alignment)
+        }
+    }
+}
+
+struct FileListColumnResizeHandle: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    let column: FileListColumn
+
+    @State private var dragStartWidth: CGFloat?
+    @State private var isHovering = false
+    @State private var isCursorPushed = false
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(Color.clear)
+
+            Rectangle()
+                .fill(isHovering ? Color.accentColor.opacity(0.65) : Color(nsColor: .separatorColor).opacity(0.55))
+                .frame(width: 1, height: 18)
+        }
+        .frame(width: FileListLayout.columnResizeHandleWidth, height: 26)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    if dragStartWidth == nil {
+                        dragStartWidth = browser.listColumnWidths.width(for: column)
+                    }
+
+                    let proposedWidth = (dragStartWidth ?? browser.listColumnWidths.width(for: column)) + value.translation.width
+                    browser.setListColumnWidth(column, to: proposedWidth)
+                }
+                .onEnded { _ in
+                    dragStartWidth = nil
+                }
+        )
+        .onHover { hovering in
+            isHovering = hovering
+
+            if hovering, !isCursorPushed {
+                NSCursor.resizeLeftRight.push()
+                isCursorPushed = true
+            } else if !hovering, isCursorPushed {
+                NSCursor.pop()
+                isCursorPushed = false
+            }
+        }
+        .onDisappear {
+            if isCursorPushed {
+                NSCursor.pop()
+                isCursorPushed = false
+            }
+        }
+        .help(L10n.string("Resize column"))
+        .accessibilityLabel(L10n.string("Resize column"))
     }
 }
 
@@ -3637,40 +3784,48 @@ struct FileRow: View {
                     .truncationMode(.middle)
             }
             .padding(.horizontal, FileListLayout.columnHorizontalPadding)
-            .frame(minWidth: 260, maxWidth: .infinity, alignment: .leading)
+            .frame(width: browser.listColumnWidths.width(for: .name), alignment: .leading)
 
             if browser.canUseGit {
                 GitStatusCell(status: browser.gitStatus(for: item))
                     .padding(.horizontal, FileListLayout.columnHorizontalPadding)
-                    .frame(width: FileListLayout.gitStatusColumnWidth, alignment: .leading)
+                    .frame(width: browser.listColumnWidths.width(for: .gitStatus), alignment: .leading)
             }
 
             if browser.shouldShowCloudStatusColumn {
                 CloudStatusCell(status: browser.cloudStatus(for: item))
                     .padding(.horizontal, FileListLayout.columnHorizontalPadding)
-                    .frame(width: FileListLayout.cloudStatusColumnWidth, alignment: .center)
+                    .frame(width: browser.listColumnWidths.width(for: .cloudStatus), alignment: .center)
             }
 
             Text(item.formattedModifiedAt)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .padding(.horizontal, FileListLayout.columnHorizontalPadding)
-                .frame(width: FileListLayout.modifiedColumnWidth, alignment: .leading)
+                .frame(width: browser.listColumnWidths.width(for: .modifiedAt), alignment: .leading)
 
             Text(item.formattedSize)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .padding(.horizontal, FileListLayout.columnHorizontalPadding)
-                .frame(width: FileListLayout.sizeColumnWidth, alignment: .trailing)
+                .frame(width: browser.listColumnWidths.width(for: .size), alignment: .trailing)
 
             Text(L10n.string(item.kind))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .padding(.horizontal, FileListLayout.columnHorizontalPadding)
-                .frame(width: FileListLayout.kindColumnWidth, alignment: .leading)
+                .frame(width: browser.listColumnWidths.width(for: .kind), alignment: .leading)
         }
         .font(.system(size: 13))
+        .frame(
+            minWidth: FileListLayout.contentWidth(
+                widths: browser.listColumnWidths,
+                includesGitStatus: browser.canUseGit,
+                includesCloudStatus: browser.shouldShowCloudStatusColumn
+            ) - FileListLayout.rowHorizontalPadding * 2,
+            alignment: .leading
+        )
         .frame(height: 28)
         .contentShape(Rectangle())
     }
@@ -3721,16 +3876,21 @@ struct CloudStatusBadge: View {
     let status: CloudFileStatus
 
     var body: some View {
-        Image(systemName: status.listSystemImageName)
-            .font(.system(size: 13, weight: .semibold))
-            .symbolRenderingMode(.hierarchical)
-            .foregroundStyle(.white)
-            .frame(width: 25, height: 19)
-            .background(
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(status.listColor)
-            )
-            .help(L10n.string(status.titleKey))
+        ZStack(alignment: .bottomTrailing) {
+            Image(systemName: "icloud")
+                .font(.system(size: 17, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+
+            if let overlaySystemImageName = status.listOverlaySystemImageName {
+                Image(systemName: overlaySystemImageName)
+                    .font(.system(size: 8, weight: .bold))
+                    .symbolRenderingMode(.hierarchical)
+                    .offset(x: 3, y: 2)
+            }
+        }
+        .foregroundStyle(status.listColor)
+        .frame(width: 28, height: 22)
+        .help(L10n.string(status.titleKey))
     }
 }
 
@@ -3756,12 +3916,12 @@ private extension GitFileStatus {
 }
 
 private extension CloudFileStatus {
-    var listSystemImageName: String {
+    var listOverlaySystemImageName: String? {
         switch self {
         case .synced:
             return "checkmark.circle.fill"
         case .cloudOnly:
-            return "icloud.fill"
+            return nil
         case .syncing:
             return "arrow.triangle.2.circlepath"
         case .error:
@@ -3776,17 +3936,17 @@ private extension CloudFileStatus {
     var listColor: Color {
         switch self {
         case .synced:
-            return Color(red: 0.25, green: 0.52, blue: 0.39)
+            return Color(red: 0.30, green: 0.47, blue: 0.37)
         case .cloudOnly:
-            return Color(red: 0.28, green: 0.47, blue: 0.64)
+            return Color(red: 0.36, green: 0.46, blue: 0.58)
         case .syncing:
-            return Color(red: 0.70, green: 0.48, blue: 0.24)
+            return Color(red: 0.61, green: 0.48, blue: 0.30)
         case .error:
-            return Color(red: 0.66, green: 0.26, blue: 0.25)
+            return Color(red: 0.62, green: 0.30, blue: 0.29)
         case .pinned:
-            return Color(red: 0.29, green: 0.53, blue: 0.55)
+            return Color(red: 0.29, green: 0.50, blue: 0.52)
         case .unknown:
-            return Color(red: 0.45, green: 0.45, blue: 0.47)
+            return Color(red: 0.47, green: 0.47, blue: 0.49)
         }
     }
 }

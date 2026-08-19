@@ -50,6 +50,8 @@ struct BrowserWindowView: View {
                     AppMenuLocalizer.apply()
                 }
 
+                CloudMirrorSyncJobScheduler.startIfNeeded(showHiddenFiles: browser.showHiddenFiles)
+
                 if let pendingURL = ExternalOpenRouter.consumeNextPendingURL() {
                     browser.openExternalDestination(pendingURL)
                 }

@@ -109,6 +109,8 @@ Shodana は、次のような作業を一つのワークスペースにまとめ
 - `shodana://` URL スキームから Shodana を開く
 - Folder Compare: ローカル、マウント済みSMB/クラウド、SFTP、S3のフォルダ比較
 - Folder Sync: Mirror、Update、Two-Way、Backup モード
+- Cloud Mirror Sync: 指定した同期元フォルダを正として、別ストレージの同期先へ構造を保ったままミラー同期
+- ミラー同期ジョブの作成、変更、削除、手動実行、起動時/毎時/毎日/毎週の定期実行
 - Dry Run、同期前プレビュー、大量削除確認、CSVログ出力
 - `.gitignore` とよくある除外パターンを考慮した比較
 - ローカルファイルは SHA-256 による内容比較に対応
@@ -130,13 +132,14 @@ Shodana は開発中のアプリです。以前の Priority 1 として挙げて
 - Git History 強化: コミット詳細、変更ファイル、ブランチグラフ、ファイル単位履歴
 - Clone Repository 強化: clone 後の自動オープン、履歴、よく使うホスト補完
 - Cloud Status 強化: OneDrive、SharePoint、Google Drive、iCloud Drive のプロバイダ別メタデータ対応精度向上
-- Folder Compare / Sync 強化: 競合解決UI、キャッシュ、詳細進捗、バックグラウンドジョブ化
+- Folder Compare / Sync 強化: キャッシュ、詳細進捗、バックグラウンドジョブの進捗UI強化
+- Cloud Mirror Sync 強化: 同期履歴、失敗通知、より細かなスケジュール、クラウドAPI直接連携
 - AI Search 強化: 複数プロバイダーのプリセット、SFTP/S3の直接コンテキスト化、送信前レビューUI
 
 ### Priority 2
 
 - Folder Compare 強化: テキストDiff Viewer、画像の左右プレビュー、差分キャッシュによる高速化
-- Folder Sync 強化: Undo、同期履歴、スケジューラ
+- Folder Sync 強化: Undo、同期履歴、スケジューラ詳細設定
 - Copy Queue: コピー、移動、アップロード、ダウンロードのジョブ管理
 - Background Upload: 大量ファイル転送の詳細進捗、残り時間表示
 - Advanced Search: ファイル内容、正規表現、Git Ignore 対応検索
@@ -445,6 +448,27 @@ Dock上のShodanaアイコンを右クリックすると、次のメニューか
 - `Backup`: 右側の `backup/yyyy-MM-dd-HHmmss/` 配下へ世代コピーします。
 
 `Dry Run` がオンの場合、実際にはコピーや削除をせず、実行予定だけを確認できます。同期後は `~/Library/Logs/Shodana/` に CSV ログを保存します。
+
+## Cloud Mirror Sync を使う
+
+上部のタブバー付近にある `Cloud Mirror Sync` ボタンから、保存可能なミラー同期ジョブを管理できます。
+
+Cloud Mirror Sync は、同期元を正として同期先を一致させる機能です。同期元に新しく追加された項目、更新された項目は同期先へコピーされます。同期元から削除された項目は、同期先でも削除対象になります。フォルダ構造は相対パスを保ったまま再現されます。
+
+対象には、ローカルフォルダ、マウント済みSMB/NAS、Google Drive / OneDrive / SharePoint / iCloud Drive などの同期フォルダ、SFTP、Amazon S3 を指定できます。Google Drive や OneDrive などは、まず各クラウドアプリがmacOS上に同期しているフォルダとして扱います。
+
+ジョブには次の内容を保存できます。
+
+- ジョブ名
+- 同期元
+- 同期先
+- SHA-256比較の有無
+- `.gitignore` などの除外ルールを使うか
+- `Dry Run` で実行するか
+- 大量削除の警告しきい値
+- スケジュール: 手動、起動時、毎時、毎日、毎週
+
+安全のため、手動実行はまず `Preview Mirror` で実行予定を確認してから `Run Mirror` を実行する流れです。定期実行でも、削除予定数がしきい値以上になった実実行は自動では進めず、誤削除を防ぎます。
 
 ## デバッグ実行
 
